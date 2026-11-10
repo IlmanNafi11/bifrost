@@ -8,12 +8,15 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { ModelSelector } from "@/components/ui/modelSelector";
 import { ProviderSelector, type ProviderSelectorOption } from "@/components/ui/providerSelector";
-import { RoutingFallbackFormData } from "@/lib/types/routingRules";
+import type { RoutingFallbackFormData } from "@/lib/types/routingRules";
+import i18n from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { FallbackRows } from "@/lib/utils/routingRules";
+import { Accessibility, DragDropManager, type DragOverEvent, type DragStartEvent } from "@dnd-kit/dom";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { GripVertical, Plus, Trash2 } from "lucide-react";
+import { useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { ProviderKeySelect } from "./routingProviderKeySelect";
 
@@ -124,6 +127,8 @@ interface RoutingFallbacksFieldProps {
 	onUpdate: (index: number, changes: Partial<RoutingFallbackFormData>) => void;
 	onRemove: (index: number) => void;
 	onReorder: (sourceId: string, targetId: string) => void;
+	/** Restores the order a cancelled drag started from (Escape or pointercancel). */
+	onCancel: (startOrder: readonly string[]) => void;
 }
 
 export function RoutingFallbacksField({
@@ -134,8 +139,40 @@ export function RoutingFallbacksField({
 	onUpdate,
 	onRemove,
 	onReorder,
+	onCancel,
 }: RoutingFallbacksFieldProps) {
 	const { t } = useTranslation("models");
+
+	// The row order as the current drag started. `onDragStart` fires once per drag, and a cancelled
+	// drag (Escape, pointercancel) has already committed live reorders by then, so onCancel replays
+	// this snapshot through the same helper that committed the reorder.
+	const dragStartOrderRef = useRef<string[]>([]);
+
+	// The manager is created once: rebuilding it on every reorder would destroy the drag in flight,
+	// since a reorder commits new ids mid-drag. Announcements read the live rows and language through
+	// refs instead, so they stay correct without re-creating the manager.
+	const rowsRef = useRef(rows);
+	rowsRef.current = rows;
+	const dndManager = useMemo(() => {
+		const rowNumberOf = (source: unknown): string => {
+			const id = source && typeof source === "object" && "id" in source ? String(source.id) : "";
+			const index = rowsRef.current.ids.indexOf(id);
+			return String(index >= 0 ? index + 1 : "?");
+		};
+		const localized = Accessibility.configure({
+			announcements: {
+				dragstart: (event: Parameters<DragStartEvent>[0]) =>
+					i18n.t("routing.fallbackDragAnnounce", { ns: "models", n: rowNumberOf(event.operation.source) }),
+				dragover: (event: Parameters<DragOverEvent>[0]) =>
+					i18n.t("routing.fallbackDragAnnounce", { ns: "models", n: rowNumberOf(event.operation.source) }),
+				dragend: () => i18n.t("routing.fallbackDragDropped", { ns: "models" }),
+			},
+			screenReaderInstructions: { draggable: i18n.t("routing.fallbackDragInstructions", { ns: "models" }) },
+		});
+		return new DragDropManager({
+			plugins: (defaults) => defaults.map((plugin) => (plugin === Accessibility ? localized : plugin)),
+		});
+	}, []);
 
 	return (
 		<div className="space-y-3">
@@ -153,12 +190,22 @@ export function RoutingFallbacksField({
 					<p className="text-muted-foreground text-sm">{t("routing.noFallbacks")}</p>
 				) : (
 					<DragDropProvider
+						manager={dndManager}
+						onDragStart={() => {
+							dragStartOrderRef.current = [...rows.ids];
+						}}
 						onDragOver={(event) => {
 							const { source, target } = event.operation;
 							if (!source || !target || source.id === target.id) {
 								return;
 							}
 							onReorder(String(source.id), String(target.id));
+						}}
+						onDragEnd={(event) => {
+							if (!event.canceled) {
+								return;
+							}
+							onCancel(dragStartOrderRef.current);
 						}}
 					>
 						{rows.fallbacks.map((fallback, index) => (

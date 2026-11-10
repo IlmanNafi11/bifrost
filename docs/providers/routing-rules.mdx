@@ -281,7 +281,7 @@ Access routing rules from the dashboard:
 - **Chain Rule**: When enabled, the routing engine re-evaluates all rules after this one matches, using the resolved provider/model as the new context. See [Rule Chaining](#rule-chaining).
 - **CEL Expression**: Visual or manual expression builder
 - **Targets** (required): One or more weighted routing targets - each has Provider (optional), Model (optional), API Key (optional, requires Provider to be set), and Weight (%). Weights must sum to 1. When multiple targets are defined, one is selected probabilistically at request time.
-- **Fallbacks** (optional): Array of fallback providers
+- **Fallbacks** (optional): Array of fallback providers, tried in the order listed. Drag a row by its grip handle (or focus the handle and press Space, then use the arrow keys) to change that order.
 - **Time to first token cutoff (ms)** (optional): For streaming requests, cut off an attempt that has not produced its first token in time and move to the next fallback. See [Time to First Token Cutoff](#time-to-first-token-ttft-cutoff).
 - **Scope**: Where rule applies (global, customer, team, virtual_key)
 - **Scope ID**: Required if scope is not global

@@ -24,6 +24,7 @@ function renderField(rows: { fallbacks: RoutingFallbackFormData[]; ids: string[]
 			onUpdate={() => {}}
 			onRemove={() => {}}
 			onReorder={() => {}}
+			onCancel={() => {}}
 		/>,
 	);
 }

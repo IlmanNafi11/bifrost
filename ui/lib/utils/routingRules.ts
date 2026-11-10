@@ -5,7 +5,7 @@ import type { RoutingTarget } from "@/lib/types/routingRules";
  * Helper functions for CEL validation, formatting, and rule management
  */
 
-import { RoutingFallbackFormData, RoutingFallbackWire } from "@/lib/types/routingRules";
+import type { RoutingFallbackFormData, RoutingFallbackWire } from "@/lib/types/routingRules";
 
 /**
  * Validates if a CEL expression has basic correct syntax
@@ -173,6 +173,23 @@ export function reorderFallbackRowsById<T>(rows: FallbackRows<T>, sourceId: stri
 		return rows;
 	}
 	return reorderFallbackRows(rows, from, to);
+}
+
+/**
+ * Puts the rows back into a previously captured id order. Used to undo a drag that was cancelled
+ * (Escape, pointercancel): the live reorder has already been committed to the form by then, so the
+ * only way back is to replay the order the drag started from. A snapshot that no longer matches the
+ * current rows (a row was added or removed mid-drag) is ignored rather than half-applied.
+ */
+export function orderFallbackRowsByIds<T>(rows: FallbackRows<T>, ids: readonly string[]): FallbackRows<T> {
+	if (ids.length !== rows.ids.length) {
+		return rows;
+	}
+	const byId = new Map(rows.ids.map((id, index) => [id, rows.fallbacks[index]]));
+	if (ids.some((id) => !byId.has(id))) {
+		return rows;
+	}
+	return { fallbacks: ids.map((id) => byId.get(id) as T), ids: [...ids] };
 }
 
 /**

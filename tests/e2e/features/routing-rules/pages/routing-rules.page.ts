@@ -772,16 +772,25 @@ export class RoutingRulesPage extends BasePage {
       .catch(() => {});
 
     if (model) {
+      // The model trigger is a button; the text box lives in the popover it opens, so the model is
+      // typed there and then picked from the filtered list.
       const modelSelect = this.sheet.getByTestId(
         `routing-fallback-${index}-model-select`,
       );
-      await modelSelect.click();
-      await modelSelect
-        .getByRole("combobox")
-        .or(modelSelect.locator("input"))
+      await modelSelect.getByRole("combobox").click();
+      const popover = this.page.locator('[data-slot="popover-content"]').last();
+      const search = popover.locator("input").first();
+      await search.waitFor({ state: "visible", timeout: 5000 });
+      await search.fill(model);
+      await popover
+        .getByRole("option", { name: new RegExp(model, "i") })
         .first()
-        .fill(model);
-      await this.page.keyboard.press("Enter");
+        .click({ force: true });
+      await this.page
+        .locator('[data-slot="popover-content"]')
+        .last()
+        .waitFor({ state: "hidden", timeout: 5000 })
+        .catch(() => {});
     }
 
     return index;
@@ -888,11 +897,48 @@ export class RoutingRulesPage extends BasePage {
     await this.page.mouse.up();
 
     // dnd-kit keeps an inert clone of the dragged row in the DOM (`data-dnd-placeholder`) until
-    // the drop animation ends. Row-scoped queries would count it as an extra row, so wait it out.
-    await this.sheet
-      .locator("[data-dnd-placeholder]")
-      .waitFor({ state: "detached", timeout: 5000 })
-      .catch(() => {});
+    // the drop animation ends. Row-scoped queries would count it as an extra row, so wait it out —
+    // and fail loudly if it never detaches, since that is exactly the state that corrupts the
+    // row-indexed assertions below.
+    await expect(this.sheet.locator("[data-dnd-placeholder]")).toHaveCount(0, {
+      timeout: 5000,
+    });
+  }
+
+  /**
+   * Reorder fallback rows with the keyboard: focus `from`'s grip handle, pick it up with Space,
+   * walk it to `to` with the arrow keys, and drop it with Space. dnd-kit's KeyboardSensor moves the
+   * item by a fixed offset per press, so the number of presses is derived from the row geometry.
+   */
+  async dragFallbackWithKeyboard(from: number, to: number): Promise<void> {
+    const handle = this.sheet.getByTestId(`routing-fallback-${from}-handle`);
+    const target = this.sheet.getByTestId(`routing-fallback-${to}-drag-row`);
+    await handle.scrollIntoViewIfNeeded();
+
+    const start = await handle.boundingBox();
+    const end = await target.boundingBox();
+    if (!start || !end) {
+      throw new Error(
+        `cannot keyboard-drag fallback ${from} onto ${to}: row not laid out`,
+      );
+    }
+
+    await handle.focus();
+    await this.page.keyboard.press("Space");
+
+    // The sensor's default step is 10px; overshoot slightly so the collision lands on the target
+    // row rather than stopping a pixel short of it.
+    const distance = Math.abs(end.y - start.y);
+    const presses = Math.max(1, Math.ceil(distance / 10) + 2);
+    const key = end.y > start.y ? "ArrowDown" : "ArrowUp";
+    for (let i = 0; i < presses; i++) {
+      await this.page.keyboard.press(key);
+    }
+    await this.page.keyboard.press("Space");
+
+    await expect(this.sheet.locator("[data-dnd-placeholder]")).toHaveCount(0, {
+      timeout: 5000,
+    });
   }
 
   /** The provider shown on a fallback row after any reorder. */
@@ -906,6 +952,19 @@ export class RoutingRulesPage extends BasePage {
       providers.push((await combos.nth(i).textContent())?.trim() ?? "");
     }
     return providers;
+  }
+
+  /** The model shown on a fallback row, so a reorder can be checked to carry it along. */
+  async getFallbackModels(): Promise<string[]> {
+    const combos = this.sheet.locator(
+      '[data-testid^="routing-fallback-"][data-testid$="-model-select"]',
+    );
+    const count = await combos.count();
+    const models: string[] = [];
+    for (let i = 0; i < count; i++) {
+      models.push((await combos.nth(i).textContent())?.trim() ?? "");
+    }
+    return models;
   }
 
   /**

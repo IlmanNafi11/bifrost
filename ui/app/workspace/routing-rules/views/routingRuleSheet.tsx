@@ -36,8 +36,10 @@ import {
 	addFallbackRow,
 	denormalizeFallback,
 	type FallbackRows,
+	fallbackRowIds,
 	MAX_TTFT_TIMEOUT_MS,
 	normalizeFallback,
+	orderFallbackRowsByIds,
 	parseTTFTTimeoutInput,
 	reconcileFallbackIds,
 	removeFallbackRow,
@@ -183,6 +185,12 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		() => ({ fallbacks: fallbacks || [], ids: fallbackIds }),
 		[fallbacks, fallbackIds],
 	);
+
+	// Drag events fire faster than React re-renders (one per dragover), so the mutation handlers
+	// read the latest committed rows from a ref instead of the render closure. Two events landing in
+	// one commit would otherwise both compute from the pre-first-event order and drop a step.
+	const fallbackRowsRef = useRef(fallbackRows);
+	fallbackRowsRef.current = fallbackRows;
 	const ttftTimeoutInput = watch("ttft_timeout_ms");
 	const ttftDisplay = summarizeTTFTDisplay(editingRule?.targets, ttftTimeoutInput, ttftEdited);
 	const hasCompleteFallback = (fallbacks || []).some((fb) => (fb.provider ?? "").trim().length > 0);
@@ -222,6 +230,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 			setValue("name", editingRule.name);
 			setValue("description", editingRule.description);
 			setValue("cel_expression", editingRule.cel_expression);
+			// Fresh ids per load: reconciling by length alone would hand a same-length rule B the
+			// previous rule's row identity, pinning its DOM nodes to the wrong fallback.
+			setFallbackIds(fallbackRowIds((editingRule.fallbacks || []).length));
 			setValue("fallbacks", (editingRule.fallbacks || []).map(normalizeFallback));
 			loadedTTFTInput.current = summarizeTargetsTTFT(editingRule.targets).ms?.toString() ?? "";
 			setTtftEdited(false);
@@ -307,20 +318,31 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	);
 
 	const addFallback = () => {
-		commitFallbackRows(addFallbackRow(fallbackRows, { ...DEFAULT_ROUTING_FALLBACK }));
+		commitFallbackRows(addFallbackRow(fallbackRowsRef.current, { ...DEFAULT_ROUTING_FALLBACK }));
 	};
 
 	const updateFallback = (index: number, changes: Partial<RoutingFallbackFormData>) => {
-		commitFallbackRows(updateFallbackRow(fallbackRows, index, changes));
+		commitFallbackRows(updateFallbackRow(fallbackRowsRef.current, index, changes));
 	};
 
 	const removeFallback = (index: number) => {
-		commitFallbackRows(removeFallbackRow(fallbackRows, index));
+		commitFallbackRows(removeFallbackRow(fallbackRowsRef.current, index));
 	};
 
 	const handleFallbackReorder = (sourceId: string, targetId: string) => {
-		const next = reorderFallbackRowsById(fallbackRows, sourceId, targetId);
-		if (next !== fallbackRows) {
+		const current = fallbackRowsRef.current;
+		const next = reorderFallbackRowsById(current, sourceId, targetId);
+		if (next !== current) {
+			commitFallbackRows(next);
+		}
+	};
+
+	// A cancelled drag (Escape, pointercancel) has already committed live reorders, so the order the
+	// drag started from is replayed. A snapshot that no longer matches the rows is ignored.
+	const handleFallbackCancel = (startOrder: readonly string[]) => {
+		const current = fallbackRowsRef.current;
+		const next = orderFallbackRowsByIds(current, startOrder);
+		if (next !== current) {
 			commitFallbackRows(next);
 		}
 	};
@@ -653,6 +675,7 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 							onUpdate={updateFallback}
 							onRemove={removeFallback}
 							onReorder={handleFallbackReorder}
+							onCancel={handleFallbackCancel}
 						/>
 
 						{/* TTFT cutoff */}

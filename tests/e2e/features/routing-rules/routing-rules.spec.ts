@@ -346,7 +346,7 @@ test.describe("Routing Rules", () => {
       await routingRulesPage.cancelRule();
     });
 
-    test("should keep the fallback selectors usable after a drag", async ({
+    test("should keep a row's provider selector usable after a drag", async ({
       routingRulesPage,
     }) => {
       const ruleData = createRoutingRuleData({
@@ -361,9 +361,77 @@ test.describe("Routing Rules", () => {
       await routingRulesPage.openEditSheet(ruleData.name);
       await routingRulesPage.dragFallback(0, 1);
 
-      // The grip sits beside the row, so pointing a row's provider still opens its list.
-      await routingRulesPage.addFallbackProvider("anthropic");
-      expect(await routingRulesPage.getFallbackProvider(2)).toMatch(/anthropic/i);
+      // After the drag row 0 holds anthropic, so re-picking openai there is a real change: the
+      // assertion can only pass if the row's own selector still opens and commits.
+      expect(await routingRulesPage.getFallbackProvider(0)).toMatch(/anthropic/i);
+      // The row's provider trigger carries the row testid directly (unlike the model select, whose
+      // testid wraps the trigger), so it is the combobox itself.
+      const rowZero = routingRulesPage.sheet.getByTestId(
+        "routing-fallback-0-provider-select",
+      );
+      await rowZero.click();
+      await routingRulesPage.page
+        .getByRole("option", { name: /^openai$/i })
+        .first()
+        .click({ force: true });
+      expect(await routingRulesPage.getFallbackProvider(0)).toMatch(/openai/i);
+      // Radix keeps the popover content mounted while its exit animation runs, and the sheet
+      // locator matches any role=dialog; wait for it to unmount or the teardown cancels ambiguously.
+      await expect(
+        routingRulesPage.page.locator('[data-slot="popover-content"]'),
+      ).toHaveCount(0, { timeout: 5000 });
+      await routingRulesPage.cancelRule();
+    });
+
+    test("should carry a fallback's model along when it is reordered", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Model Move Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        fallbacks: [
+          { provider: "openai", model: "gpt-4o-mini" },
+          { provider: "anthropic" },
+        ],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+
+      const modelsBefore = await routingRulesPage.getFallbackModels();
+      expect(modelsBefore[0]).toMatch(/gpt-4o-mini/i);
+
+      await routingRulesPage.dragFallback(0, 1);
+
+      // The model belongs to the row, not the slot: it must move with its provider.
+      const modelsAfter = await routingRulesPage.getFallbackModels();
+      expect(modelsAfter[1]).toMatch(/gpt-4o-mini/i);
+      expect(modelsAfter[0]).not.toMatch(/gpt-4o-mini/i);
+      await routingRulesPage.cancelRule();
+    });
+
+    test("should reorder fallbacks with the keyboard", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Keyboard Order Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        fallbacks: [{ provider: "anthropic" }, { provider: "openai" }],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+
+      const [first, second] = await routingRulesPage.getFallbackProviders();
+      await routingRulesPage.dragFallbackWithKeyboard(0, 1);
+
+      const reordered = await routingRulesPage.getFallbackProviders();
+      expect(reordered[0]).toBe(second);
+      expect(reordered[1]).toBe(first);
       await routingRulesPage.cancelRule();
     });
 

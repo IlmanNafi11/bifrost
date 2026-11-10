@@ -18,6 +18,7 @@ import {
 	resolveTargetTTFTMs,
 	summarizeTTFTDisplay,
 	summarizeTargetsTTFT,
+	orderFallbackRowsByIds,
 	updateFallbackRow,
 } from "./routingRules";
 
@@ -249,6 +250,13 @@ describe("fallback row identity", () => {
 		expect(result.ids).toEqual(["id-a", "id-c"]);
 	});
 
+	it("leaves the rows untouched when removing an out-of-range index", () => {
+		const rows = { fallbacks: ["a", "b"], ids: ["id-a", "id-b"] };
+
+		expect(removeFallbackRow(rows, -1)).toBe(rows);
+		expect(removeFallbackRow(rows, 2)).toBe(rows);
+	});
+
 	it("leaves ids untouched when a row's fields change", () => {
 		const rows: FallbackRows<Partial<RoutingFallbackFormData>> = {
 			fallbacks: [{ provider: "openai" }, { provider: "anthropic" }],
@@ -323,5 +331,51 @@ describe("reorderFallbackRowsById", () => {
 	it("ignores ids that are not in the list", () => {
 		expect(reorderFallbackRowsById(rows, "id-x", "id-b")).toBe(rows);
 		expect(reorderFallbackRowsById(rows, "id-b", "id-x")).toBe(rows);
+	});
+});
+
+describe("orderFallbackRowsByIds", () => {
+	const rows = { fallbacks: ["b", "c", "a"], ids: ["id-b", "id-c", "id-a"] };
+
+	it("replays a captured id order onto the current rows", () => {
+		const result = orderFallbackRowsByIds(rows, ["id-a", "id-b", "id-c"]);
+
+		expect(result.fallbacks).toEqual(["a", "b", "c"]);
+		expect(result.ids).toEqual(["id-a", "id-b", "id-c"]);
+	});
+
+	it("returns the input untouched when the snapshot is already the current order", () => {
+		const result = orderFallbackRowsByIds(rows, rows.ids);
+
+		expect(result.fallbacks).toEqual(rows.fallbacks);
+		expect(result.ids).toEqual(rows.ids);
+	});
+
+	it("ignores a snapshot whose length no longer matches, so a mid-drag add is not undone", () => {
+		expect(orderFallbackRowsByIds(rows, ["id-a", "id-b"])).toBe(rows);
+	});
+
+	it("ignores a snapshot naming a row that no longer exists", () => {
+		expect(orderFallbackRowsByIds(rows, ["id-a", "id-b", "id-gone"])).toBe(rows);
+	});
+});
+
+describe("fallback row mutation sequence", () => {
+	it("keeps ids aligned and unique when mutations are applied cumulatively", () => {
+		let rows: FallbackRows<string> = { fallbacks: ["a", "b"], ids: ["id-a", "id-b"] };
+
+		rows = addFallbackRow(rows, "c");
+		rows = reorderFallbackRowsById(rows, rows.ids[2], rows.ids[0]);
+		rows = removeFallbackRow(rows, 1);
+		rows = reorderFallbackRowsById(rows, rows.ids[1], rows.ids[0]);
+
+		expect(rows.ids).toHaveLength(rows.fallbacks.length);
+		expect(new Set(rows.ids).size).toBe(rows.ids.length);
+		// The sequence above adds "c", moves it to the front, removes index 1 ("a"), then swaps the
+		// remaining two: every surviving id must still name the fallback it was minted for.
+		expect(rows.fallbacks).toEqual(["b", "c"]);
+		const owner = new Map(rows.ids.map((id, index) => [id, rows.fallbacks[index]]));
+		expect(owner.get("id-b")).toBe("b");
+		expect(owner.get(rows.ids[1])).toBe("c");
 	});
 });
