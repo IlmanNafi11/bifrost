@@ -5,6 +5,7 @@ import {
 	MAX_TTFT_TIMEOUT_MS,
 	normalizeFallback,
 	parseTTFTTimeoutInput,
+	reorderFallbacks,
 	resolveTargetTTFTMs,
 	summarizeTTFTDisplay,
 	summarizeTargetsTTFT,
@@ -141,5 +142,55 @@ describe("summarizeTTFTDisplay", () => {
 		expect(summarizeTTFTDisplay(mixed, "", true)).toEqual({ mixed: false, active: false });
 		expect(summarizeTTFTDisplay(mixed, "900", true)).toEqual({ mixed: false, active: true });
 		expect(summarizeTTFTDisplay(uniform, "abc", true)).toEqual({ mixed: false, active: false });
+	});
+});
+
+describe("reorderFallbacks", () => {
+	const items = ["a", "b", "c", "d"];
+
+	it("moves an item down and returns a new array", () => {
+		const input = [...items];
+		const result = reorderFallbacks(input, 0, 2);
+
+		expect(result).toEqual(["b", "c", "a", "d"]);
+		expect(input).toEqual(items);
+		expect(result).not.toBe(input);
+	});
+
+	it("moves an item up", () => {
+		const input = [...items];
+		const result = reorderFallbacks(input, 3, 1);
+
+		expect(result).toEqual(["a", "d", "b", "c"]);
+		expect(input).toEqual(items);
+	});
+
+	it("is a no-op that still returns a copy when source equals target", () => {
+		const input = [...items];
+		const result = reorderFallbacks(input, 2, 2);
+
+		expect(result).toEqual(items);
+		expect(result).not.toBe(input);
+	});
+
+	it.each([
+		[-1, 1],
+		[0, 4],
+		[9, 0],
+		[0, -1],
+	] as const)("returns an unchanged copy for out-of-bounds %s -> %s", (from, to) => {
+		const input = [...items];
+		const result = reorderFallbacks(input, from, to);
+
+		expect(result).toEqual(items);
+		expect(result).not.toBe(input);
+	});
+
+	it("handles empty and single-element arrays", () => {
+		const empty: string[] = [];
+		expect(reorderFallbacks(empty, 0, 0)).toEqual([]);
+		expect(reorderFallbacks(empty, -1, 1)).toEqual([]);
+		expect(reorderFallbacks(["only"], 0, 0)).toEqual(["only"]);
+		expect(reorderFallbacks(["only"], 0, 3)).toEqual(["only"]);
 	});
 });

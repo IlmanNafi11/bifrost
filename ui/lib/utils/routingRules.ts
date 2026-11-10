@@ -86,6 +86,20 @@ export function denormalizeFallback(fallback: Partial<RoutingFallbackFormData>):
 }
 
 /**
+ * Moves the item at `from` to `to`, returning a new array. Out-of-bounds indices leave the order
+ * untouched. Used by the sheet's drag reorder, which keeps a parallel id array in the same order.
+ */
+export function reorderFallbacks<T>(items: readonly T[], from: number, to: number): T[] {
+	const result = [...items];
+	if (from < 0 || from >= result.length || to < 0 || to >= result.length || from === to) {
+		return result;
+	}
+	const [moved] = result.splice(from, 1);
+	result.splice(to, 0, moved);
+	return result;
+}
+
+/**
  * Truncates CEL expression for table display
  * @param expression - The CEL expression
  * @param maxLength - Maximum length (default 60)
