@@ -886,6 +886,13 @@ export class RoutingRulesPage extends BasePage {
       await this.page.waitForTimeout(50);
     }
     await this.page.mouse.up();
+
+    // dnd-kit keeps an inert clone of the dragged row in the DOM (`data-dnd-placeholder`) until
+    // the drop animation ends. Row-scoped queries would count it as an extra row, so wait it out.
+    await this.sheet
+      .locator("[data-dnd-placeholder]")
+      .waitFor({ state: "detached", timeout: 5000 })
+      .catch(() => {});
   }
 
   /** The provider shown on a fallback row after any reorder. */

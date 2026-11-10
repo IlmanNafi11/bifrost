@@ -321,7 +321,7 @@ test.describe("Routing Rules", () => {
         name: `Fallback Order Rule ${Date.now()}`,
         enabled: false,
         provider: "openai",
-        fallbacks: [{ provider: "anthropic" }, { provider: "gemini" }],
+        fallbacks: [{ provider: "anthropic" }, { provider: "openai" }],
       });
       createdRules.push(ruleData.name);
 
@@ -353,7 +353,7 @@ test.describe("Routing Rules", () => {
         name: `Fallback Drag Edit Rule ${Date.now()}`,
         enabled: false,
         provider: "openai",
-        fallbacks: [{ provider: "anthropic" }, { provider: "gemini" }],
+        fallbacks: [{ provider: "openai" }, { provider: "anthropic" }],
       });
       createdRules.push(ruleData.name);
 
@@ -362,8 +362,8 @@ test.describe("Routing Rules", () => {
       await routingRulesPage.dragFallback(0, 1);
 
       // The grip sits beside the row, so pointing a row's provider still opens its list.
-      await routingRulesPage.addFallbackProvider("openai");
-      expect(await routingRulesPage.getFallbackProvider(2)).toMatch(/openai/i);
+      await routingRulesPage.addFallbackProvider("anthropic");
+      expect(await routingRulesPage.getFallbackProvider(2)).toMatch(/anthropic/i);
       await routingRulesPage.cancelRule();
     });
 
