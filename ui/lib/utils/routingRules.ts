@@ -99,6 +99,69 @@ export function reorderFallbacks<T>(items: readonly T[], from: number, to: numbe
 	return result;
 }
 
+let fallbackRowIdCounter = 0;
+
+/** Render-stable identifier for a fallback row. Never persisted; dnd-kit keys need it across reorders. */
+export function newFallbackRowId(): string {
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+		return crypto.randomUUID();
+	}
+	fallbackRowIdCounter += 1;
+	return `fallback-row-${fallbackRowIdCounter}`;
+}
+
+/** A fallback row list plus the render-stable ids that keep each row's DOM node pinned to it. */
+export interface FallbackRows<T> {
+	fallbacks: T[];
+	ids: string[];
+}
+
+/** Fresh ids for a loaded rule's fallbacks; ids are per-open, never persisted. */
+export function fallbackRowIds(count: number): string[] {
+	return Array.from({ length: count }, () => newFallbackRowId());
+}
+
+/**
+ * Moves a fallback row and its id together, so the two arrays stay index-aligned. The id array is
+ * what keeps a row's DOM node pinned to its fallback while dnd-kit reorders live.
+ */
+export function reorderFallbackRows<T>(rows: FallbackRows<T>, from: number, to: number): FallbackRows<T> {
+	return { fallbacks: reorderFallbacks(rows.fallbacks, from, to), ids: reorderFallbacks(rows.ids, from, to) };
+}
+
+export function addFallbackRow<T>(rows: FallbackRows<T>, fallback: T): FallbackRows<T> {
+	return { fallbacks: [...rows.fallbacks, fallback], ids: [...rows.ids, newFallbackRowId()] };
+}
+
+export function removeFallbackRow<T>(rows: FallbackRows<T>, index: number): FallbackRows<T> {
+	if (index < 0 || index >= rows.fallbacks.length) {
+		return rows;
+	}
+	return {
+		fallbacks: rows.fallbacks.filter((_, i) => i !== index),
+		ids: rows.ids.filter((_, i) => i !== index),
+	};
+}
+
+/** Row fields change; identity does not, so a selector edit never remounts its own row. */
+export function updateFallbackRow<T>(rows: FallbackRows<T>, index: number, changes: Partial<T>): FallbackRows<T> {
+	return {
+		fallbacks: rows.fallbacks.map((row, i) => (i === index ? { ...row, ...changes } : row)),
+		ids: rows.ids,
+	};
+}
+
+/** Pads or truncates ids to `count`, keeping the ones already in place. Used after a form reset. */
+export function reconcileFallbackIds(ids: readonly string[], count: number): string[] {
+	if (ids.length === count) {
+		return ids as string[];
+	}
+	if (ids.length > count) {
+		return ids.slice(0, count);
+	}
+	return [...ids, ...fallbackRowIds(count - ids.length)];
+}
+
 /**
  * Truncates CEL expression for table display
  * @param expression - The CEL expression

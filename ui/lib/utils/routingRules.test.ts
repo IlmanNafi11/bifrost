@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+	addFallbackRow,
 	denormalizeFallback,
+	fallbackRowIds,
 	formatTargetsTTFT,
 	MAX_TTFT_TIMEOUT_MS,
+	newFallbackRowId,
 	normalizeFallback,
 	parseTTFTTimeoutInput,
+	reconcileFallbackIds,
+	removeFallbackRow,
+	reorderFallbackRows,
 	reorderFallbacks,
 	resolveTargetTTFTMs,
 	summarizeTTFTDisplay,
 	summarizeTargetsTTFT,
+	updateFallbackRow,
 } from "./routingRules";
 
 describe("routing fallback wire format", () => {
@@ -192,5 +199,103 @@ describe("reorderFallbacks", () => {
 		expect(reorderFallbacks(empty, -1, 1)).toEqual([]);
 		expect(reorderFallbacks(["only"], 0, 0)).toEqual(["only"]);
 		expect(reorderFallbacks(["only"], 0, 3)).toEqual(["only"]);
+	});
+});
+
+describe("fallback row identity", () => {
+	it("generates a distinct, non-empty id per row", () => {
+		const ids = new Set(Array.from({ length: 20 }, () => newFallbackRowId()));
+
+		expect(ids.size).toBe(20);
+		for (const id of ids) {
+			expect(id.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("reorders fallbacks and their ids in lockstep", () => {
+		const rows = { fallbacks: ["a", "b", "c"], ids: ["id-a", "id-b", "id-c"] };
+
+		const result = reorderFallbackRows(rows, 0, 2);
+
+		expect(result.fallbacks).toEqual(["b", "c", "a"]);
+		expect(result.ids).toEqual(["id-b", "id-c", "id-a"]);
+		expect(rows.fallbacks).toEqual(["a", "b", "c"]);
+		expect(rows.ids).toEqual(["id-a", "id-b", "id-c"]);
+	});
+
+	it("keeps both arrays unchanged for an out-of-bounds move", () => {
+		const result = reorderFallbackRows({ fallbacks: ["a", "b"], ids: ["id-a", "id-b"] }, 0, 5);
+
+		expect(result.fallbacks).toEqual(["a", "b"]);
+		expect(result.ids).toEqual(["id-a", "id-b"]);
+	});
+
+	it("gives an added row its own id without disturbing the existing ones", () => {
+		const result = addFallbackRow({ fallbacks: ["a"], ids: ["id-a"] }, "b");
+
+		expect(result.fallbacks).toEqual(["a", "b"]);
+		expect(result.ids).toHaveLength(2);
+		expect(result.ids[0]).toBe("id-a");
+		expect(result.ids[1]).not.toBe("id-a");
+	});
+
+	it("drops the removed row's id and keeps the rest aligned", () => {
+		const result = removeFallbackRow({ fallbacks: ["a", "b", "c"], ids: ["id-a", "id-b", "id-c"] }, 1);
+
+		expect(result.fallbacks).toEqual(["a", "c"]);
+		expect(result.ids).toEqual(["id-a", "id-c"]);
+	});
+
+	it("leaves ids untouched when a row's fields change", () => {
+		const rows = { fallbacks: [{ provider: "openai" }, { provider: "anthropic" }], ids: ["id-a", "id-b"] };
+
+		const result = updateFallbackRow(rows, 1, { model: "claude" });
+
+		expect(result.fallbacks).toEqual([{ provider: "openai" }, { provider: "anthropic", model: "claude" }]);
+		expect(result.ids).toEqual(["id-a", "id-b"]);
+	});
+
+	it("keeps ids and fallbacks the same length through every mutation", () => {
+		const start = { fallbacks: ["a", "b", "c"], ids: ["id-a", "id-b", "id-c"] };
+		const steps = [
+			addFallbackRow(start, "d"),
+			removeFallbackRow(start, 0),
+			reorderFallbackRows(start, 2, 0),
+			updateFallbackRow(start, 1, "B"),
+		];
+
+		for (const step of steps) {
+			expect(step.ids).toHaveLength(step.fallbacks.length);
+			expect(new Set(step.ids).size).toBe(step.ids.length);
+		}
+	});
+
+	it("builds a fresh id per fallback when loading a stored rule", () => {
+		const ids = fallbackRowIds(2);
+
+		expect(ids).toHaveLength(2);
+		expect(ids[0]).not.toBe(ids[1]);
+		expect(fallbackRowIds(0)).toEqual([]);
+	});
+});
+
+describe("reconcileFallbackIds", () => {
+	it("pads a short id list and keeps the ids already in place", () => {
+		const reconciled = reconcileFallbackIds(["id-a"], 3);
+
+		expect(reconciled).toHaveLength(3);
+		expect(reconciled[0]).toBe("id-a");
+		expect(new Set(reconciled).size).toBe(3);
+	});
+
+	it("truncates a long id list", () => {
+		expect(reconcileFallbackIds(["id-a", "id-b", "id-c"], 1)).toEqual(["id-a"]);
+		expect(reconcileFallbackIds(["id-a"], 0)).toEqual([]);
+	});
+
+	it("returns the same array reference when already aligned", () => {
+		const ids = ["id-a", "id-b"];
+
+		expect(reconcileFallbackIds(ids, 2)).toBe(ids);
 	});
 });
