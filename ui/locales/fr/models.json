@@ -2011,6 +2011,7 @@
 		"removeFallback": "Supprimer la solution de secours {{n}}",
 		"fallbackDragHandleAria": "Faites glisser la solution de secours {{n}} pour réorganiser",
 		"fallbackDragAnnounce": "Solution de secours {{n}} saisie, utilisez les flèches pour la déplacer",
+		"fallbackDragMovedTo": "Solution de secours déplacée à la position {{n}}",
 		"fallbackDragDropped": "Solution de secours déposée à sa nouvelle position",
 		"fallbackDragInstructions": "Pour réorganiser une solution de secours, appuyez sur la barre d'espace sur sa poignée. Pendant le déplacement, utilisez les flèches pour la déplacer. Appuyez à nouveau sur la barre d'espace pour la déposer, ou sur Échap pour annuler.",
 		"fallbacksOrder": "Les solutions de secours seront utilisées dans l'ordre où elles sont définies",

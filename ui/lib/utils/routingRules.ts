@@ -103,8 +103,28 @@ let fallbackRowIdCounter = 0;
 
 /** Render-stable identifier for a fallback row. Never persisted; dnd-kit keys need it across reorders. */
 export function newFallbackRowId(): string {
-	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-		return crypto.randomUUID();
+	if (typeof crypto !== "undefined") {
+		if (typeof crypto.randomUUID === "function") {
+			return crypto.randomUUID();
+		}
+		if (typeof crypto.getRandomValues === "function") {
+			// v4 UUID built from crypto-random bytes: unique across concurrent sheets/tabs,
+			// unlike the counter fallback below.
+			const bytes = new Uint8Array(16);
+			crypto.getRandomValues(bytes);
+			bytes[6] = (bytes[6] & 0x0f) | 0x40;
+			bytes[8] = (bytes[8] & 0x3f) | 0x80;
+			const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+			// UUID groups are byte-aligned: 8-4-4-4-12 hex digits. Groups 3 and 4 carry the
+			// version/variant bits already applied to bytes 6 and 8 above.
+			return [
+				hex.slice(0, 4).join(""),
+				hex.slice(4, 6).join(""),
+				hex.slice(6, 8).join(""),
+				hex.slice(8, 10).join(""),
+				hex.slice(10).join(""),
+			].join("-");
+		}
 	}
 	fallbackRowIdCounter += 1;
 	return `fallback-row-${fallbackRowIdCounter}`;
@@ -183,6 +203,12 @@ export function reorderFallbackRowsById<T>(rows: FallbackRows<T>, sourceId: stri
  */
 export function orderFallbackRowsByIds<T>(rows: FallbackRows<T>, ids: readonly string[]): FallbackRows<T> {
 	if (ids.length !== rows.ids.length) {
+		return rows;
+	}
+	// A duplicate id would make the Map-based replay ambiguous (two slots mapping to one row and
+	// silently dropping the other). Current write paths keep ids unique, so treat it as invalid input
+	// rather than half-applying a broken ordering.
+	if (new Set(ids).size !== ids.length || new Set(rows.ids).size !== rows.ids.length) {
 		return rows;
 	}
 	const byId = new Map(rows.ids.map((id, index) => [id, rows.fallbacks[index]]));

@@ -186,9 +186,11 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		[fallbacks, fallbackIds],
 	);
 
-	// Drag events fire faster than React re-renders (one per dragover), so the mutation handlers
-	// read the latest committed rows from a ref instead of the render closure. Two events landing in
-	// one commit would otherwise both compute from the pre-first-event order and drop a step.
+	// The mutation/reorder/cancel handlers read the latest committed rows through a ref rather than
+	// the render closure, so an event that fires before React has re-rendered still sees the current
+	// order. This keeps the handlers correct across a burst of dragover callbacks; the reorder helper
+	// itself is pure and idempotent, so a stale closure would only skip a visual intermediate state,
+	// never corrupt the final order.
 	const fallbackRowsRef = useRef(fallbackRows);
 	fallbackRowsRef.current = fallbackRows;
 	const ttftTimeoutInput = watch("ttft_timeout_ms");

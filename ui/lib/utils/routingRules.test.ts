@@ -1,5 +1,5 @@
 import type { RoutingFallbackFormData } from "@/lib/types/routingRules";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	addFallbackRow,
 	denormalizeFallback,
@@ -377,5 +377,50 @@ describe("fallback row mutation sequence", () => {
 		const owner = new Map(rows.ids.map((id, index) => [id, rows.fallbacks[index]]));
 		expect(owner.get("id-b")).toBe("b");
 		expect(owner.get(rows.ids[1])).toBe("c");
+	});
+});
+describe("orderFallbackRowsByIds duplicate-id guard", () => {
+	const rows = { fallbacks: ["a", "b", "c"], ids: ["id-a", "id-b", "id-c"] };
+
+	it("ignores a snapshot with a duplicated id, which would replay ambiguously", () => {
+		expect(orderFallbackRowsByIds(rows, ["id-a", "id-a", "id-b"])).toBe(rows);
+	});
+
+	it("ignores current rows whose own ids are duplicated", () => {
+		const broken = { fallbacks: ["a", "b", "c"], ids: ["id-a", "id-a", "id-b"] };
+		expect(orderFallbackRowsByIds(broken, ["id-a", "id-b", "id-c"])).toBe(broken);
+	});
+});
+
+describe("newFallbackRowId without crypto.randomUUID", () => {
+	it("falls back to a growing counter when neither randomUUID nor getRandomValues exists", () => {
+		vi.stubGlobal("crypto", undefined);
+		try {
+			const first = newFallbackRowId();
+			const second = newFallbackRowId();
+			expect(first).not.toBe(second);
+			expect(first.startsWith("fallback-row-")).toBe(true);
+			expect(second.startsWith("fallback-row-")).toBe(true);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("uses crypto.getRandomValues when randomUUID is absent but getRandomValues is present", () => {
+		const fake = {
+			getRandomValues(arr: Uint8Array): Uint8Array {
+				for (let i = 0; i < arr.length; i++) arr[i] = 0x42;
+				return arr;
+			},
+		} as unknown as Crypto;
+		vi.stubGlobal("crypto", fake);
+		try {
+			const id = newFallbackRowId();
+			// v4-shaped UUID from the fixed bytes: byte 6 masks to 0x42 ("42"), byte 8 to 0x82
+			// ("82"), so group 3 starts with version "4" and group 4 carries the variant bit.
+			expect(id).toMatch(/^42424242-4242-4242-8242-424242424242$/);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });

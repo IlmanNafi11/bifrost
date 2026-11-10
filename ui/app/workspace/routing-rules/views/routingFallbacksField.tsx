@@ -163,8 +163,10 @@ export function RoutingFallbacksField({
 			announcements: {
 				dragstart: (event: Parameters<DragStartEvent>[0]) =>
 					i18n.t("routing.fallbackDragAnnounce", { ns: "models", n: rowNumberOf(event.operation.source) }),
+				// A separate key from dragstart: repeating "grabbed…" on every dragover tells the user nothing
+				// new, so dragover states which position the row landed on.
 				dragover: (event: Parameters<DragOverEvent>[0]) =>
-					i18n.t("routing.fallbackDragAnnounce", { ns: "models", n: rowNumberOf(event.operation.source) }),
+					i18n.t("routing.fallbackDragMovedTo", { ns: "models", n: rowNumberOf(event.operation.target) }),
 				dragend: () => i18n.t("routing.fallbackDragDropped", { ns: "models" }),
 			},
 			screenReaderInstructions: { draggable: i18n.t("routing.fallbackDragInstructions", { ns: "models" }) },
@@ -208,18 +210,27 @@ export function RoutingFallbacksField({
 							onCancel(dragStartOrderRef.current);
 						}}
 					>
-						{rows.fallbacks.map((fallback, index) => (
-							<SortableFallbackRow
-								key={rows.ids[index] ?? index}
-								id={rows.ids[index] ?? String(index)}
-								fallback={fallback}
-								index={index}
-								referencedProviderOptions={referencedProviderOptions}
-								allKeys={allKeys}
-								onUpdate={onUpdate}
-								onRemove={onRemove}
-							/>
-						))}
+						{rows.fallbacks.map((fallback, index) => {
+							const rowId = rows.ids[index];
+							if (import.meta.env.DEV && !rowId) {
+								// The sheet guarantees ids.length === fallbacks.length, so an undefined id here
+								// means that invariant broke somewhere upstream. Fail loudly instead of silently
+								// keying by index (which would remount the row mid-interaction).
+								throw new Error(`Routing fallback row ${index} has no stable id`);
+							}
+							return (
+								<SortableFallbackRow
+									key={rowId ?? index}
+									id={rowId ?? String(index)}
+									fallback={fallback}
+									index={index}
+									referencedProviderOptions={referencedProviderOptions}
+									allKeys={allKeys}
+									onUpdate={onUpdate}
+									onRemove={onRemove}
+								/>
+							);
+						})}
 					</DragDropProvider>
 				)}
 			</div>

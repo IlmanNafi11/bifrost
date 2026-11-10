@@ -2009,6 +2009,7 @@
 		"removeFallback": "移除回退 {{n}}",
 		"fallbackDragHandleAria": "拖动回退 {{n}} 以重新排序",
 		"fallbackDragAnnounce": "已抓取回退 {{n}}，使用方向键移动",
+		"fallbackDragMovedTo": "回退已移动到位置 {{n}}",
 		"fallbackDragDropped": "回退已放置到新位置",
 		"fallbackDragInstructions": "要重新排序回退，请在其手柄上按空格键。拖动时使用方向键移动回退。再次按空格键放置，或按 Esc 取消。",
 		"fallbacksOrder": "回退将按定义顺序使用",

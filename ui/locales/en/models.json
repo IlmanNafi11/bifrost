@@ -2011,6 +2011,7 @@
 		"removeFallback": "Remove fallback {{n}}",
 		"fallbackDragHandleAria": "Drag fallback {{n}} to reorder",
 		"fallbackDragAnnounce": "Fallback {{n}} grabbed, use the arrow keys to move it",
+		"fallbackDragMovedTo": "Fallback moved to position {{n}}",
 		"fallbackDragDropped": "Fallback dropped in its new position",
 		"fallbackDragInstructions": "To reorder a fallback, press the space bar on its handle. While dragging, use the arrow keys to move the fallback. Press space again to drop it, or press escape to cancel.",
 		"fallbacksOrder": "Fallbacks will be used in the order they are defined",

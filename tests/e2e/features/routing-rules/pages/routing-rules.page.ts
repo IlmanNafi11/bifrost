@@ -940,6 +940,48 @@ export class RoutingRulesPage extends BasePage {
       timeout: 5000,
     });
   }
+  /**
+   * Cancels a drag mid-gesture by pressing Escape. Starts a real pointer drag from `from`'s grip
+   * handle and walks it partway toward `to`, then aborts without releasing — the path that triggers
+   * dnd-kit's `onDragEnd` with `canceled: true` and drives the sheet's snapshot replay back to the
+   * pre-drag order. A cancelled drag leaves no placeholder behind, so nothing to wait out here.
+   */
+  async cancelFallbackDragByEscaping(from: number, to: number): Promise<void> {
+    const handle = this.sheet.getByTestId(`routing-fallback-${from}-handle`);
+    const target = this.sheet.getByTestId(`routing-fallback-${to}-drag-row`);
+    await handle.scrollIntoViewIfNeeded();
+
+    const start = await handle.boundingBox();
+    const end = await target.boundingBox();
+    if (!start || !end) {
+      throw new Error(`cannot cancel-drag fallback ${from} onto ${to}: row not laid out`);
+    }
+
+    await this.page.mouse.move(
+      start.x + start.width / 2,
+      start.y + start.height / 2,
+    );
+    await this.page.mouse.down();
+    // Break the pointer activation constraint, then drift halfway to the target so the live reorder
+    // commits an intermediate order before we abort.
+    await this.page.mouse.move(
+      start.x + start.width / 2,
+      start.y + start.height / 2 + 12,
+      { steps: 4 },
+    );
+    const fromY = start.y + start.height / 2;
+    const toY = end.y + end.height / 2;
+    for (let step = 1; step <= 10; step++) {
+      await this.page.mouse.move(
+        end.x + end.width / 2,
+        fromY + ((toY - fromY) * step) / 20,
+      );
+      await this.page.waitForTimeout(50);
+    }
+    // Abort via Escape while still holding the pointer down; dnd-kit reports the drag as cancelled.
+    await this.page.keyboard.press("Escape");
+    await this.page.mouse.up();
+  }
 
   /** The provider shown on a fallback row after any reorder. */
   async getFallbackProviders(): Promise<string[]> {

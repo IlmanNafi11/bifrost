@@ -1,3 +1,12 @@
+/**
+ * Scope: render-only structural checks via `renderToStaticMarkup`. No React lifecycle runs here, so
+ * dnd-kit interactions (onDragOver → onReorder, onDragEnd canceled → onCancel replay) are NOT
+ * exercised at this level — those live paths are covered by the Playwright specs in
+ * `tests/e2e/features/routing-rules/`, which drive real pointer/keyboard gestures through
+ * DragDropProvider. Pure reorder/reconcile logic for these callbacks lives in
+ * `lib/utils/routingRules.test.ts`. Keep additions here to markup/ordering/testids; move behavior
+ * assertions to e2e or the pure-helper suite.
+ */
 import i18n from "@/lib/i18n";
 import type { RoutingFallbackFormData } from "@/lib/types/routingRules";
 import { renderToStaticMarkup } from "react-dom/server";

@@ -2011,6 +2011,7 @@
 		"removeFallback": "Remover fallback {{n}}",
 		"fallbackDragHandleAria": "Arraste o fallback {{n}} para reordenar",
 		"fallbackDragAnnounce": "Fallback {{n}} capturado, use as setas para movê-lo",
+		"fallbackDragMovedTo": "Fallback movido para a posição {{n}}",
 		"fallbackDragDropped": "Fallback solto na nova posição",
 		"fallbackDragInstructions": "Para reordenar um fallback, pressione a barra de espaço na alça dele. Enquanto arrasta, use as setas para movê-lo. Pressione a barra de espaço novamente para soltar, ou Escape para cancelar.",
 		"fallbacksOrder": "Os fallbacks serão usados pela ordem em que estão definidos",

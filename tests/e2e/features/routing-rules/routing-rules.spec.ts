@@ -434,6 +434,104 @@ test.describe("Routing Rules", () => {
       expect(reordered[1]).toBe(first);
       await routingRulesPage.cancelRule();
     });
+    test("should restore the original order when a drag is cancelled with Escape", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Cancel Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        // Seeded in [anthropic, openai]; dragged toward openai's slot, the live reorder would leave
+        // [openai, anthropic]. Cancelling must put it back to [anthropic, openai], not keep the
+        // intermediate hover order.
+        fallbacks: [{ provider: "anthropic" }, { provider: "openai" }],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+
+      const before = await routingRulesPage.getFallbackProviders();
+      expect(before).toEqual(["Anthropic", "OpenAI"]);
+
+      // Hover past the target without releasing, then abort. A real pointer gesture that cancels
+      // partway leaves the form in an intermediate state on its own; only the snapshot replay can
+      // restore the pre-drag order.
+      await routingRulesPage.cancelFallbackDragByEscaping(0, 1);
+
+      const afterCancel = await routingRulesPage.getFallbackProviders();
+      expect(afterCancel).toEqual(before);
+
+      // Saving must persist the restored order, not the transient one.
+      await routingRulesPage.saveBtn.click();
+      await expect(routingRulesPage.sheet).not.toBeVisible();
+      await routingRulesPage.openEditSheet(ruleData.name);
+      expect(await routingRulesPage.getFallbackProviders()).toEqual(before);
+      await routingRulesPage.cancelRule();
+    });
+
+    test("should reorder two fallbacks with the same provider but different models", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Same Provider Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        // Both rows resolve to OpenAI, so the provider text alone cannot detect the flip; this
+        // asserts the model travels with the row identity, which is what distinguishes them.
+        fallbacks: [
+          { provider: "openai", model: "gpt-4o-mini" },
+          { provider: "openai", model: "gpt-4.1-mini" },
+        ],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+
+      const modelsBefore = await routingRulesPage.getFallbackModels();
+      expect(modelsBefore[0]).toMatch(/gpt-4o-mini/i);
+      expect(modelsBefore[1]).toMatch(/gpt-4\.1-mini/i);
+
+      await routingRulesPage.dragFallback(0, 1);
+
+      // The models swap positions while both providers stay "OpenAI": proof each row kept its data.
+      const modelsAfter = await routingRulesPage.getFallbackModels();
+      expect(modelsAfter[0]).toMatch(/gpt-4\.1-mini/i);
+      expect(modelsAfter[1]).toMatch(/gpt-4o-mini/i);
+
+      // Save and re-open to confirm the order survives the round trip.
+      await routingRulesPage.saveBtn.click();
+      await expect(routingRulesPage.sheet).not.toBeVisible();
+      await routingRulesPage.openEditSheet(ruleData.name);
+      expect(await routingRulesPage.getFallbackModels()).toEqual(modelsAfter);
+      await routingRulesPage.cancelRule();
+    });
+
+    test("should do nothing when dragging the only fallback onto itself", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Single Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        fallbacks: [{ provider: "anthropic" }],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+
+      const single = await routingRulesPage.getFallbackProviders();
+      expect(single).toHaveLength(1);
+
+      // A single-row list has no valid drop target other than itself; dnd-kit reports the self-drop
+      // and the reorder helper ignores it, leaving the order untouched rather than crashing.
+      await routingRulesPage.dragFallback(0, 0);
+
+      expect(await routingRulesPage.getFallbackProviders()).toEqual(single);
+      await routingRulesPage.cancelRule();
+    });
 
     test("should set, edit and clear the TTFT cutoff", async ({
       routingRulesPage,

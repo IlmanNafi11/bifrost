@@ -2009,6 +2009,7 @@
 		"removeFallback": "フォールバック {{n}} を削除",
 		"fallbackDragHandleAria": "フォールバック {{n}} をドラッグして並べ替え",
 		"fallbackDragAnnounce": "フォールバック {{n}} を掴みました。矢印キーで移動できます",
+		"fallbackDragMovedTo": "フォールバックを位置 {{n}} に移動しました",
 		"fallbackDragDropped": "フォールバックを新しい位置にドロップしました",
 		"fallbackDragInstructions": "フォールバックを並べ替えるには、ハンドル上でスペースキーを押します。ドラッグ中は矢印キーで移動します。もう一度スペースキーでドロップ、Esc でキャンセルします。",
 		"fallbacksOrder": "フォールバックは定義された順序で使用されます",
