@@ -2007,6 +2007,7 @@
 		"selectProvider": "選擇供應商…",
 		"incomingOptional": "入站（可選）",
 		"removeFallback": "移除回退 {{n}}",
+		"fallbackDragHandleAria": "拖曳回退 {{n}} 以重新排序",
 		"fallbacksOrder": "回退將按定義順序使用",
 		"targetN": "目標 {{n}}",
 		"removeTarget": "移除目標 {{n}}",

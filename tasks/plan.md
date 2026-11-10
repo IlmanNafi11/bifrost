@@ -22,20 +22,20 @@ Menambahkan reorder drag & drop pada blok Fallbacks di `routingRuleSheet.tsx`. P
 - [x] `npx vitest run lib/utils/routingRules.test.ts` lulus semua
 
 ### Phase 2: Core Feature
-- [ ] Task 2: Integrasi dnd-kit sortable pada blok Fallbacks di `routingRuleSheet.tsx`
+- [x] Task 2: Integrasi dnd-kit sortable pada blok Fallbacks di `routingRuleSheet.tsx`
 
 ### Checkpoint: Core Feature
-- [ ] `npm run typecheck` lulus (type-safe)
-- [ ] Manual: drag reorder baris fallback di rule sheet, urutan live ter-update, save menghasilkan payload urutan baru
+- [x] `npm run typecheck` lulus (type-safe)
+- [x] Manual: drag reorder baris fallback di rule sheet, urutan live ter-update, save menghasilkan payload urutan baru
 
 ### Phase 3: Polish
-- [ ] Task 3: Tambah i18n key drag handle + mirror ke semua locale
+- [x] Task 3: Tambah i18n key drag handle + mirror ke semua locale
 
 ### Checkpoint: Complete
-- [ ] `npm run i18n:check` lulus
-- [ ] `npm run lint` lulus
-- [ ] Semua acceptance criteria terpenuhi
-- [ ] Siap review
+- [x] `npm run i18n:check` lulus
+- [x] `npm run lint` lulus
+- [x] Semua acceptance criteria terpenuhi
+- [x] Siap review
 
 ## Risks and Mitigations
 

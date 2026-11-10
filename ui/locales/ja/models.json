@@ -2007,6 +2007,7 @@
 		"selectProvider": "プロバイダーを選択...",
 		"incomingOptional": "着信（任意）",
 		"removeFallback": "フォールバック {{n}} を削除",
+		"fallbackDragHandleAria": "フォールバック {{n}} をドラッグして並べ替え",
 		"fallbacksOrder": "フォールバックは定義された順序で使用されます",
 		"targetN": "ターゲット {{n}}",
 		"removeTarget": "ターゲット {{n}} を削除",

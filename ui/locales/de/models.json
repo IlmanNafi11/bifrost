@@ -2009,6 +2009,7 @@
 		"selectProvider": "Anbieter auswählen...",
 		"incomingOptional": "Eingehend (optional)",
 		"removeFallback": "Fallback {{n}} entfernen",
+		"fallbackDragHandleAria": "Fallback {{n}} zum Umsortieren ziehen",
 		"fallbacksOrder": "Fallbacks werden in der Reihenfolge verwendet, in der sie definiert sind",
 		"targetN": "Ziel {{n}}",
 		"removeTarget": "Ziel {{n}} entfernen",

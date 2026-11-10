@@ -2009,6 +2009,7 @@
 		"selectProvider": "Sélectionnez un fournisseur...",
 		"incomingOptional": "Entrant (optionnel)",
 		"removeFallback": "Supprimer la solution de secours {{n}}",
+		"fallbackDragHandleAria": "Faites glisser la solution de secours {{n}} pour réorganiser",
 		"fallbacksOrder": "Les solutions de secours seront utilisées dans l'ordre où elles sont définies",
 		"targetN": "Cible {{n}}",
 		"removeTarget": "Supprimer la cible {{n}}",

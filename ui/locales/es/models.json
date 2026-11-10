@@ -2009,6 +2009,7 @@
 		"selectProvider": "Selecciona proveedor...",
 		"incomingOptional": "Entrante (opcional)",
 		"removeFallback": "Retirar la espalda{{n}}",
+		"fallbackDragHandleAria": "Arrastra el fallback {{n}} para reordenar",
 		"fallbacksOrder": "Los inconvenientes se utilizarán en el orden que se definen",
 		"targetN": "Meta{{n}}",
 		"removeTarget": "Quitar el objetivo{{n}}",

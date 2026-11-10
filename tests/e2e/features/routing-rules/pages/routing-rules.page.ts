@@ -849,6 +849,59 @@ export class RoutingRulesPage extends BasePage {
   }
 
   /**
+   * Reorder fallback rows by dragging `from`'s grip handle onto `to`'s row. The drag is a real
+   * pointer gesture, since dnd-kit listens to pointer events rather than HTML5 drag events.
+   */
+  async dragFallback(from: number, to: number): Promise<void> {
+    const handle = this.sheet.getByTestId(`routing-fallback-${from}-handle`);
+    const target = this.sheet.getByTestId(`routing-fallback-${to}-drag-row`);
+    await handle.scrollIntoViewIfNeeded();
+
+    const start = await handle.boundingBox();
+    const end = await target.boundingBox();
+    if (!start || !end) {
+      throw new Error(`cannot drag fallback ${from} onto ${to}: row not laid out`);
+    }
+
+    await this.page.mouse.move(
+      start.x + start.width / 2,
+      start.y + start.height / 2,
+    );
+    await this.page.mouse.down();
+    // dnd-kit's pointer sensor needs a move past its distance constraint to start the drag.
+    await this.page.mouse.move(
+      start.x + start.width / 2,
+      start.y + start.height / 2 + 12,
+      { steps: 4 },
+    );
+    // One move per step: the live reorder fires per dragover, so a single jump across two rows
+    // would only ever report the last one and land the row a slot short.
+    const fromY = start.y + start.height / 2;
+    const toY = end.y + end.height / 2;
+    for (let step = 1; step <= 20; step++) {
+      await this.page.mouse.move(
+        end.x + end.width / 2,
+        fromY + ((toY - fromY) * step) / 20,
+      );
+      await this.page.waitForTimeout(50);
+    }
+    await this.page.mouse.up();
+  }
+
+  /** The provider shown on a fallback row after any reorder. */
+  async getFallbackProviders(): Promise<string[]> {
+    const combos = this.sheet.locator(
+      '[data-testid^="routing-fallback-"][data-testid$="-provider-select"]',
+    );
+    const count = await combos.count();
+    const providers: string[] = [];
+    for (let i = 0; i < count; i++) {
+      providers.push((await combos.nth(i).textContent())?.trim() ?? "");
+    }
+    return providers;
+  }
+
+  /**
    * Duplicate an existing rule
    */
   async duplicateRule(name: string): Promise<string | null> {

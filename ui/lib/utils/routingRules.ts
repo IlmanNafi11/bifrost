@@ -163,6 +163,19 @@ export function reconcileFallbackIds(ids: readonly string[], count: number): str
 }
 
 /**
+ * Applies a dnd-kit drag reported by row id. Unknown ids and a drop on the dragged row itself
+ * return the input untouched, so a live drag never churns the form while it is over its own row.
+ */
+export function reorderFallbackRowsById<T>(rows: FallbackRows<T>, sourceId: string, targetId: string): FallbackRows<T> {
+	const from = rows.ids.indexOf(sourceId);
+	const to = rows.ids.indexOf(targetId);
+	if (from === -1 || to === -1 || from === to) {
+		return rows;
+	}
+	return reorderFallbackRows(rows, from, to);
+}
+
+/**
  * Truncates CEL expression for table display
  * @param expression - The CEL expression
  * @param maxLength - Maximum length (default 60)

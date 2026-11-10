@@ -2007,6 +2007,7 @@
 		"selectProvider": "제공업체 선택...",
 		"incomingOptional": "수신(선택사항)",
 		"removeFallback": "대체 제거 {{n}}",
+		"fallbackDragHandleAria": "대체 {{n}}을(를) 끌어서 순서 변경",
 		"fallbacksOrder": "폴백은 정의된 순서대로 사용돼요.",
 		"targetN": "대상 {{n}}",
 		"removeTarget": "대상 삭제 {{n}}",

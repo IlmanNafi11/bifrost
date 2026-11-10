@@ -1,8 +1,10 @@
+import type { RoutingFallbackFormData } from "@/lib/types/routingRules";
 import { describe, expect, it } from "vitest";
 import {
 	addFallbackRow,
 	denormalizeFallback,
 	fallbackRowIds,
+	type FallbackRows,
 	formatTargetsTTFT,
 	MAX_TTFT_TIMEOUT_MS,
 	newFallbackRowId,
@@ -11,6 +13,7 @@ import {
 	reconcileFallbackIds,
 	removeFallbackRow,
 	reorderFallbackRows,
+	reorderFallbackRowsById,
 	reorderFallbacks,
 	resolveTargetTTFTMs,
 	summarizeTTFTDisplay,
@@ -247,7 +250,10 @@ describe("fallback row identity", () => {
 	});
 
 	it("leaves ids untouched when a row's fields change", () => {
-		const rows = { fallbacks: [{ provider: "openai" }, { provider: "anthropic" }], ids: ["id-a", "id-b"] };
+		const rows: FallbackRows<Partial<RoutingFallbackFormData>> = {
+			fallbacks: [{ provider: "openai" }, { provider: "anthropic" }],
+			ids: ["id-a", "id-b"],
+		};
 
 		const result = updateFallbackRow(rows, 1, { model: "claude" });
 
@@ -297,5 +303,25 @@ describe("reconcileFallbackIds", () => {
 		const ids = ["id-a", "id-b"];
 
 		expect(reconcileFallbackIds(ids, 2)).toBe(ids);
+	});
+});
+
+describe("reorderFallbackRowsById", () => {
+	const rows = { fallbacks: ["a", "b", "c"], ids: ["id-a", "id-b", "id-c"] };
+
+	it("moves the source row onto the target's index", () => {
+		const result = reorderFallbackRowsById(rows, "id-a", "id-c");
+
+		expect(result.fallbacks).toEqual(["b", "c", "a"]);
+		expect(result.ids).toEqual(["id-b", "id-c", "id-a"]);
+	});
+
+	it("ignores a drag that ends on its own row", () => {
+		expect(reorderFallbackRowsById(rows, "id-b", "id-b")).toBe(rows);
+	});
+
+	it("ignores ids that are not in the list", () => {
+		expect(reorderFallbackRowsById(rows, "id-x", "id-b")).toBe(rows);
+		expect(reorderFallbackRowsById(rows, "id-b", "id-x")).toBe(rows);
 	});
 });

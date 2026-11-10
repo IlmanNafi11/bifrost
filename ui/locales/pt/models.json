@@ -2009,6 +2009,7 @@
 		"selectProvider": "Selecionar fornecedor...",
 		"incomingOptional": "De entrada (opcional)",
 		"removeFallback": "Remover fallback {{n}}",
+		"fallbackDragHandleAria": "Arraste o fallback {{n}} para reordenar",
 		"fallbacksOrder": "Os fallbacks serão usados pela ordem em que estão definidos",
 		"targetN": "Destino {{n}}",
 		"removeTarget": "Remover destino {{n}}",

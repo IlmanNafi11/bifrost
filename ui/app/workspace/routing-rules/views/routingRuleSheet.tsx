@@ -33,13 +33,19 @@ import {
 	RoutingTargetFormData,
 } from "@/lib/types/routingRules";
 import {
+	addFallbackRow,
 	denormalizeFallback,
+	type FallbackRows,
 	MAX_TTFT_TIMEOUT_MS,
 	normalizeFallback,
 	parseTTFTTimeoutInput,
+	reconcileFallbackIds,
+	removeFallbackRow,
+	reorderFallbackRowsById,
 	resolveTargetTTFTMs,
 	summarizeTargetsTTFT,
 	summarizeTTFTDisplay,
+	updateFallbackRow,
 } from "@/lib/utils/routingRules";
 import { validateRateLimitAndBudgetRules, validateRoutingRules } from "@/lib/utils/celConverterRouting";
 import { isValidRuleGroupType, normalizeRoutingRuleGroupQuery } from "@/lib/utils/routingRuleGroupQuery";
@@ -51,6 +57,8 @@ import type { ParseKeys, TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { RuleGroupType } from "react-querybuilder";
 import { toast } from "sonner";
+import { RoutingFallbacksField } from "./routingFallbacksField";
+import { ProviderKeySelect } from "./routingProviderKeySelect";
 // Side-effect import: registers the enterprise user picker (no-op in OSS builds).
 import "@enterprise/lib/registrations/userPicker";
 
@@ -131,6 +139,9 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	// Server-side CEL compile error, surfaced inline under the CEL editor instead of a toast.
 	const [celError, setCelError] = useState<string | null>(null);
 
+	// dnd-kit needs a row id that survives an array move, so rows carry one in a parallel array.
+	const [fallbackIds, setFallbackIds] = useState<string[]>([]);
+
 	const {
 		register,
 		handleSubmit,
@@ -160,6 +171,18 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 	// without a user directory, which hides the "User" scope option.
 	const UserPicker = getUserPicker();
 	const fallbacks = watch("fallbacks");
+
+	// `reset()` and the edit-load effect replace `fallbacks` outside the row helpers, so the id
+	// array is topped up or trimmed here. Reconciling returns the same array when lengths agree,
+	// so the state write is a no-op on every render that did not change the row count.
+	useEffect(() => {
+		setFallbackIds((prev) => reconcileFallbackIds(prev, fallbacks?.length ?? 0));
+	}, [fallbacks]);
+
+	const fallbackRows = useMemo<FallbackRows<RoutingFallbackFormData>>(
+		() => ({ fallbacks: fallbacks || [], ids: fallbackIds }),
+		[fallbacks, fallbackIds],
+	);
 	const ttftTimeoutInput = watch("ttft_timeout_ms");
 	const ttftDisplay = summarizeTTFTDisplay(editingRule?.targets, ttftTimeoutInput, ttftEdited);
 	const hasCompleteFallback = (fallbacks || []).some((fb) => (fb.provider ?? "").trim().length > 0);
@@ -273,18 +296,33 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 		setTargets((prev) => prev.map((t, i) => (i === index ? { ...t, [field]: value } : t)));
 	};
 
+	// Every fallback mutation goes through one write, so `fallbacks` (the form value, which is sent)
+	// and `fallbackIds` (the drag identity) can never drift apart.
+	const commitFallbackRows = useCallback(
+		(next: FallbackRows<RoutingFallbackFormData>) => {
+			setFallbackIds(next.ids);
+			setValue("fallbacks", next.fallbacks);
+		},
+		[setValue],
+	);
+
+	const addFallback = () => {
+		commitFallbackRows(addFallbackRow(fallbackRows, { ...DEFAULT_ROUTING_FALLBACK }));
+	};
+
 	const updateFallback = (index: number, changes: Partial<RoutingFallbackFormData>) => {
-		setValue(
-			"fallbacks",
-			(fallbacks || []).map((fb, i) => (i === index ? { ...fb, ...changes } : fb)),
-		);
+		commitFallbackRows(updateFallbackRow(fallbackRows, index, changes));
 	};
 
 	const removeFallback = (index: number) => {
-		setValue(
-			"fallbacks",
-			(fallbacks || []).filter((_, i) => i !== index),
-		);
+		commitFallbackRows(removeFallbackRow(fallbackRows, index));
+	};
+
+	const handleFallbackReorder = (sourceId: string, targetId: string) => {
+		const next = reorderFallbackRowsById(fallbackRows, sourceId, targetId);
+		if (next !== fallbackRows) {
+			commitFallbackRows(next);
+		}
 	};
 
 	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
@@ -607,42 +645,15 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 						</div>
 
 						{/* Fallbacks */}
-						<div className="space-y-3">
-							<div className="flex items-center justify-between">
-								<div>
-									<Label>{t("routing.fallbacks")}</Label>{" "}
-									<p className="text-muted-foreground mt-0.5 text-xs">{t("routing.fallbacksHelp")}</p>
-								</div>
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									onClick={() => setValue("fallbacks", [...(fallbacks || []), { ...DEFAULT_ROUTING_FALLBACK }])}
-									className="gap-2"
-								>
-									<Plus className="h-4 w-4" />
-									{t("routing.addFallback")}
-								</Button>
-							</div>
-							<div className="space-y-2">
-								{(fallbacks || []).length === 0 ? (
-									<p className="text-muted-foreground text-sm">{t("routing.noFallbacks")}</p>
-								) : (
-									(fallbacks || []).map((fallback, index) => (
-										<FallbackRow
-											key={index}
-											fallback={fallback}
-											index={index}
-											referencedProviderOptions={referencedProviderOptions}
-											allKeys={allKeysData}
-											onUpdate={updateFallback}
-											onRemove={removeFallback}
-										/>
-									))
-								)}
-							</div>
-							<p className="text-muted-foreground text-xs">{t("routing.fallbacksOrder")}</p>
-						</div>
+						<RoutingFallbacksField
+							rows={fallbackRows}
+							referencedProviderOptions={referencedProviderOptions}
+							allKeys={allKeysData}
+							onAdd={addFallback}
+							onUpdate={updateFallback}
+							onRemove={removeFallback}
+							onReorder={handleFallbackReorder}
+						/>
 
 						{/* TTFT cutoff */}
 						<div className="space-y-3">
@@ -687,134 +698,6 @@ export function RoutingRuleSheet({ open, onOpenChange, editingRule, onSuccess }:
 				</form>
 			</SheetContent>
 		</Sheet>
-	);
-}
-
-interface ProviderKeySelectProps {
-	idPrefix: string;
-	clearLabel: string;
-	provider?: string;
-	keyId?: string;
-	allKeys: Array<{ key_id: string; name: string; provider: string }>;
-	onChange: (keyId: string) => void;
-}
-
-/** Renders nothing until a provider is chosen, since keys are scoped to one. */
-function ProviderKeySelect({ idPrefix, clearLabel, provider, keyId, allKeys, onChange }: ProviderKeySelectProps) {
-	const { t } = useTranslation("models");
-	const availableKeys = provider ? allKeys.filter((k) => k.provider === provider).map((k) => ({ id: k.key_id, name: k.name })) : [];
-	if (!provider || (availableKeys.length === 0 && !keyId)) {
-		return null;
-	}
-
-	return (
-		<div className="space-y-1.5">
-			<Label id={`${idPrefix}-apikey-label`} className="text-xs">
-				<Trans i18nKey="routing.apiKeyOptional" ns="models" components={{ muted: <span className="text-muted-foreground" /> }} />
-			</Label>
-			<div className="flex gap-1.5">
-				<Select value={keyId || ""} onValueChange={onChange}>
-					<SelectTrigger
-						id={`${idPrefix}-apikey-select`}
-						aria-labelledby={`${idPrefix}-apikey-label`}
-						className="h-9 flex-1 text-sm"
-						data-testid={`${idPrefix}-apikey-select`}
-					>
-						<SelectValue placeholder={t("routing.selectKeyOptional")} />
-					</SelectTrigger>
-					<SelectContent>
-						{availableKeys.map((key) => (
-							<SelectItem key={key.id} value={key.id}>
-								{key.name}
-							</SelectItem>
-						))}
-						{keyId && !availableKeys.some((k) => k.id === keyId) && (
-							<SelectItem key={`pinned-${keyId}`} value={keyId}>
-								{t("routing.pinnedKey", { id: keyId })}
-							</SelectItem>
-						)}
-					</SelectContent>
-				</Select>
-				{keyId && (
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						onClick={() => onChange("")}
-						className="h-9 w-9 p-0"
-						aria-label={clearLabel}
-						data-testid={`${idPrefix}-apikey-clear`}
-					>
-						<X className="h-3.5 w-3.5" />
-					</Button>
-				)}
-			</div>
-		</div>
-	);
-}
-
-interface FallbackRowProps {
-	fallback: RoutingFallbackFormData;
-	index: number;
-	referencedProviderOptions: ProviderSelectorOption[];
-	allKeys: Array<{ key_id: string; name: string; provider: string }>;
-	onUpdate: (index: number, changes: Partial<RoutingFallbackFormData>) => void;
-	onRemove: (index: number) => void;
-}
-
-function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUpdate, onRemove }: FallbackRowProps) {
-	const { t } = useTranslation("models");
-	const provider = fallback.provider || "";
-
-	return (
-		<div className="space-y-2 rounded-lg border p-3" data-testid={`routing-fallback-${index}`}>
-			<div className="flex items-center gap-2">
-				<div className="flex-1">
-					<ProviderSelector
-						extraOptions={referencedProviderOptions}
-						value={provider}
-						// A key belongs to one provider, so switching providers invalidates the pin.
-						onChange={(value: string) => onUpdate(index, { provider: value, model: "", key_id: "" })}
-						placeholder={t("routing.selectProvider")}
-						className="!h-9 !min-h-9"
-						data-testid={`routing-fallback-${index}-provider-select`}
-						noPortal
-					/>
-				</div>
-				<div className="flex-1" data-testid={`routing-fallback-${index}-model-select`}>
-					<ModelSelector
-						provider={provider || undefined}
-						value={fallback.model || ""}
-						onChange={(value) => onUpdate(index, { model: value })}
-						placeholder={t("routing.incomingOptional")}
-						allowCustomModel
-						unfiltered={true}
-						disabled={!provider}
-						className="!h-9 !min-h-9 w-full"
-					/>
-				</div>
-				<Button
-					type="button"
-					variant="ghost"
-					size="sm"
-					onClick={() => onRemove(index)}
-					className="h-9 px-2"
-					aria-label={t("routing.removeFallback", { n: index + 1 })}
-					data-testid={`routing-fallback-${index}-remove-button`}
-				>
-					<Trash2 className="h-4 w-4" />
-				</Button>
-			</div>
-
-			<ProviderKeySelect
-				idPrefix={`routing-fallback-${index}`}
-				clearLabel={t("routing.clearFallbackApiKey", { n: index + 1 })}
-				provider={provider}
-				keyId={fallback.key_id}
-				allKeys={allKeys}
-				onChange={(value) => onUpdate(index, { key_id: value })}
-			/>
-		</div>
 	);
 }
 

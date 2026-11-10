@@ -314,6 +314,59 @@ test.describe("Routing Rules", () => {
       await routingRulesPage.cancelRule();
     });
 
+    test("should reorder fallbacks by dragging the grip handle", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Order Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        fallbacks: [{ provider: "anthropic" }, { provider: "gemini" }],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+
+      expect(await routingRulesPage.getFallbackProviders()).toHaveLength(2);
+      const [first, second] = await routingRulesPage.getFallbackProviders();
+
+      // Row 0 to row 1: the order must flip, live, before the drop.
+      await routingRulesPage.dragFallback(0, 1);
+
+      const reordered = await routingRulesPage.getFallbackProviders();
+      expect(reordered[0]).toBe(second);
+      expect(reordered[1]).toBe(first);
+
+      // The new order is what gets saved, and it survives the round trip.
+      await routingRulesPage.saveBtn.click();
+      await expect(routingRulesPage.sheet).not.toBeVisible();
+      await routingRulesPage.openEditSheet(ruleData.name);
+      expect(await routingRulesPage.getFallbackProviders()).toEqual(reordered);
+      await routingRulesPage.cancelRule();
+    });
+
+    test("should keep the fallback selectors usable after a drag", async ({
+      routingRulesPage,
+    }) => {
+      const ruleData = createRoutingRuleData({
+        name: `Fallback Drag Edit Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+        fallbacks: [{ provider: "anthropic" }, { provider: "gemini" }],
+      });
+      createdRules.push(ruleData.name);
+
+      await routingRulesPage.createRoutingRule(ruleData);
+      await routingRulesPage.openEditSheet(ruleData.name);
+      await routingRulesPage.dragFallback(0, 1);
+
+      // The grip sits beside the row, so pointing a row's provider still opens its list.
+      await routingRulesPage.addFallbackProvider("openai");
+      expect(await routingRulesPage.getFallbackProvider(2)).toMatch(/openai/i);
+      await routingRulesPage.cancelRule();
+    });
+
     test("should set, edit and clear the TTFT cutoff", async ({
       routingRulesPage,
     }) => {
