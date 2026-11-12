@@ -55,7 +55,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `plugins/governance/routingrulestore.go` (baru), `routingrulestore_test.go` (baru)
   - Deps: none (configstore) · Size: M
 
-- [ ] **T8 — `evaluateAccess` gate requested-name vs listed**
+- [x] **T8 — `evaluateAccess` gate requested-name vs listed**
   - Acceptance: nil → perilaku lama; `[]` → non-rule ditolak; rule meneruskan target/fallback; requested-name yang diuji.
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'ListedModels|ModelBlocked|EvaluateRequest'`
   - Files: `plugins/governance/resolver.go`, `resolver_test.go`

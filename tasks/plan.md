@@ -101,7 +101,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: None (hanya configstore). Files: `plugins/governance/routingrulestore.go` (baru), `routingrulestore_test.go` (baru).
   - Scope: M (2).
 
-- [ ] **Task 8: `evaluateAccess` gate requested-name vs listed**
+- [x] **Task 8: `evaluateAccess` gate requested-name vs listed**
   - Description: di `resolver.go` (dalam `evaluateAccess`, setelah model gate ba…sekaligus sebelum/di samping `IsModelAllowed` block resolver.go:166): baca `requested := GetStringFromContext(ctx, BifrostContextKeyRequestedModel)`; bila `requested != "" && !access.ModelListed(provider, requested)` && rule-set tidak allow → `DecisionModelBlocked` ("Model '%s' is not listed for this virtual key"). Model final tetap diperiksa terhadap `allowed_models`/definisi rule (D12/D4); provider gate tetap berjalan (D5). `IsProbe` tidak men-skip gate ini (probe pun harus listed).
   - Acceptance: VK nil → perilaku lama; `[]` → model non-rule ditolak; rule teregister meneruskan ke target/fallback meski target tidak di allowed/listed; requested-name (bukan post-rewrite) yang diuji.
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'ListedModels|ModelBlocked|EvaluateRequest'`.
