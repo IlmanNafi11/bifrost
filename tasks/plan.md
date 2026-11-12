@@ -146,7 +146,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Scope: M (3).
 
 ### Checkpoint: Config end-to-end
-- [ ] config.json → DB → permit → listing round-trip manual
+- [x] config.json → DB → permit → listing round-trip — `TestListedModelsConfigRoundTrip` (`lib/config_test.go`)
 
 ### Phase 6: UI
 
@@ -198,9 +198,9 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Scope: XS (1).
 
 ### Checkpoint: Complete
-- [ ] Semua Success Criteria spec (1-12) terpenuhi
-- [ ] `make test`, `make test-framework`, `make test-plugins`, `make test-governance`, UI checks hijau
-- [ ] Siap review
+- [x] Semua Success Criteria spec (1-12) terpenuhi
+- [x] `make test`, `make test-framework`, `make test-plugins`, `make test-governance`, UI checks hijau
+- [x] Siap review
 
 ## Risks and Mitigations
 

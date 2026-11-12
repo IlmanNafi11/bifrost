@@ -380,6 +380,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/featureflags"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -27280,5 +27281,128 @@ func TestListedModelsFromConfigFile(t *testing.T) {
 		listed := storedListed(t, config)
 		require.NotNil(t, listed, "dropping the last entry must not turn the block off")
 		assert.Empty(t, listed)
+	})
+}
+
+// TestListedModelsConfigRoundTrip closes the config-to-wire loop the block's other tests leave in
+// three pieces: TestListedModelsFromConfigFile stops at the stored row, TestPermitForVirtualKey_
+// ListedModels starts from a key built in memory, and TestFilterModelsForAccess_ListedModels starts
+// from a governance store seeded in memory. Here one config.json is loaded into its own SQLite
+// store, governance is built over that store the way the server builds it (from the rows, not from
+// the file), and the two answers a key's holder observes are read off the result: what /v1/models
+// lists and whether a model the block does not name is admitted. A rule entry has to survive being
+// called by the name the file wrote, so the rule is declared in the same file rather than seeded.
+func TestListedModelsConfigRoundTrip(t *testing.T) {
+	initTestLogger()
+	log := &fatalRecordingLogger{}
+	SetLogger(log)
+	dir := t.TempDir()
+	raw := `{
+		"client": {"initial_pool_size": 10, "allowed_origins": ["*"]},
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(dir, "config.db")) + `}},
+		"providers": {
+			"openai": {"keys": [{"value": "sk-openai"}]},
+			"anthropic": {"keys": [{"value": "sk-anthropic"}]}
+		},
+		"governance": {
+			"routing_rules": [
+				{"name": "coding", "cel_expression": "true", "scope": "global",
+				 "targets": [{"provider": "openai", "model": "gpt-5.4", "weight": 1}]}
+			],
+			"virtual_keys": [{
+				"id": "vk-listed", "name": "vk-listed", "value": "sk-bf-listed",
+				"provider_configs": [
+					{"provider": "openai", "allowed_models": ["*"], "allow_all_keys": true},
+					{"provider": "anthropic", "allowed_models": ["*"], "allow_all_keys": true}
+				],
+				"listed_models": [
+					{"provider": "openai", "model": "gpt-4o"},
+					{"routing_rule": "coding"}
+				]
+			}]
+		}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0o644))
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	require.Empty(t, log.fatals, "the governance sync failed, which stops startup")
+	defer config.Close(ctx)
+
+	// The block is layered on allowed_models, which is resolved through the model catalog: an entry
+	// there only admits a model the provider is known to serve. LoadConfig does not fetch model
+	// lists, so the catalog is seeded with what the openai key serves - gpt-4o (the listed entry)
+	// and gpt-4o-mini (allowed, but not listed) - the way a refresh would.
+	openaiKeys := config.Providers[schemas.OpenAI].Keys
+	config.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, openaiKeys)
+	served := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "openai/gpt-4o"}, {ID: "openai/gpt-4o-mini"}}}
+	config.ModelCatalog.UpsertLiveFromResponse(schemas.OpenAI, openaiKeys[0].ID, false, served)
+	config.ModelCatalog.UpsertLiveFromResponse(schemas.OpenAI, openaiKeys[0].ID, true, served)
+
+	// The plugin reads the stored rows, as the server's startup does: no governance config is handed
+	// in, so nothing here answers from the file's in-memory copy.
+	plugin, err := governance.Init(ctx, nil, bifrost.NewNoOpLogger(), config.ConfigStore, nil, config.ModelCatalog, nil, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, plugin.Cleanup()) }()
+
+	present := func() *schemas.BifrostContext {
+		requestCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		requestCtx.SetGrant(grant.New())
+		requestCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-listed")
+		SettleIdentity(requestCtx)
+		return requestCtx
+	}
+
+	t.Run("the listing is the file's block, with the rule by name", func(t *testing.T) {
+		requestCtx := present()
+		access, err := plugin.ResolveAccess(requestCtx)
+		require.NoError(t, err)
+		require.NotNil(t, access, "a stored key has to resolve to an access")
+		require.NotNil(t, access.ListedModels(), "the stored block has to reach the permit")
+		assert.Equal(t, []schemas.ListedModelEntry{{Provider: "openai", Model: "gpt-4o"}}, access.ListedModels())
+		assert.Equal(t, []string{"coding"}, access.ListedRules(), "a rule is stored and carried by the name the file wrote")
+
+		result := &schemas.BifrostResponse{ListModelsResponse: &schemas.BifrostListModelsResponse{
+			Data: []schemas.Model{{ID: "openai/gpt-4o"}, {ID: "openai/gpt-4o-mini"}, {ID: "anthropic/claude-sonnet-5"}},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ListModelsRequest, Provider: schemas.OpenAI,
+			},
+		}}
+		_, failure, err := plugin.PostLLMHook(requestCtx, result, nil)
+		require.NoError(t, err)
+		require.Nil(t, failure)
+		ids := make([]string, 0, len(result.ListModelsResponse.Data))
+		for _, model := range result.ListModelsResponse.Data {
+			ids = append(ids, model.ID)
+		}
+		assert.Equal(t, []string{"openai/gpt-4o", "coding"}, ids,
+			"the listing is the stored entry plus the named rule, and nothing the block leaves out")
+	})
+
+	t.Run("a model the block does not name is refused", func(t *testing.T) {
+		for _, model := range []string{"gpt-4o-mini"} {
+			requestCtx := present()
+			requestCtx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
+			requestCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+			result, failure := plugin.Evaluate(requestCtx, &governance.EvaluationRequest{
+				RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Model: model,
+			})
+			require.NotNil(t, failure, "a refused request comes back as the error it is served with")
+			require.NotNil(t, failure.StatusCode)
+			assert.Equal(t, 403, *failure.StatusCode)
+			assert.Equal(t, governance.DecisionModelBlocked, result.Decision, "model %s", model)
+			assert.Contains(t, result.Reason, "is not listed for this virtual key")
+		}
+	})
+
+	t.Run("a model the block names is admitted", func(t *testing.T) {
+		requestCtx := present()
+		requestCtx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o")
+		requestCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+		result, failure := plugin.Evaluate(requestCtx, &governance.EvaluationRequest{
+			RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Model: "gpt-4o",
+		})
+		require.Nil(t, failure)
+		assert.Equal(t, governance.DecisionAllow, result.Decision, result.Reason)
 	})
 }

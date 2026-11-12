@@ -93,7 +93,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Deps: T11 · Size: M
 
 ### Checkpoint: Config end-to-end
-- [ ] config.json → DB → permit → listing round-trip
+- [x] config.json → DB → permit → listing round-trip — dipin di `TestListedModelsConfigRoundTrip` (listing, 403 non-listed, allow listed), di-falsifikasi lebih dulu
 
 ## Phase 6: UI
 
