@@ -376,6 +376,14 @@ func (plugin *Plugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifro
 // state on the plugin keyed by request ID for PostLLMHook to consume when
 // the upstream response arrives.
 func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// A model probe must measure the provider, not the cache: it neither reads an
+	// entry (a hit would report someone else's latency and mask a dead model) nor
+	// writes one (a probe's tiny `max_tokens` answer is not what a real request
+	// wants served back).
+	if bifrost.IsModelProbe(ctx) {
+		return req, nil, nil
+	}
+
 	cacheKey, ok := plugin.resolveCacheKey(ctx)
 	if !ok {
 		return req, nil, nil
@@ -659,6 +667,13 @@ func (plugin *Plugin) placeholderVector() []float32 {
 // spawnCacheWriter, which also recovers store panics). Returns the response
 // unmodified — caching never alters the request flow.
 func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	// A probe's verdict comes from the provider, never from the cache, and its answer
+	// is never worth serving a real request later: it neither reads an entry (a hit
+	// would report someone else's latency and mask a dead model) nor writes one (a
+	// `max_tokens:16` answer is not what a normal request should be served).
+	if bifrost.IsModelProbe(ctx) {
+		return res, bifrostErr, nil
+	}
 	if bifrostErr != nil {
 		// We rely on errors always arriving as the final chunk for streams, so
 		// we abort caching here without further bookkeeping. Any partial

@@ -780,6 +780,64 @@ func TestPostLLMHook_WritesPlaceholderWhenVectorRequiredButEmbeddingMissing(t *t
 	}
 }
 
+// TestProbe_NeverReadsOrWritesCache pins the probe contract at the cache layer: a
+// probe's verdict must come from the provider, never from an entry an earlier
+// identical prompt left behind, and a probe must not seed the cache for later
+// traffic. Both a cache hit and a cache write would be wrong here.
+func TestProbe_NeverReadsOrWritesCache(t *testing.T) {
+	store := newObservableStore()
+	plugin := newTestPlugin(t, store)
+	plugin.config.TTL = 5 * time.Minute
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("hi", 0.7, 16),
+	}
+
+	// Prime the cache the ordinary way, so a probe of the identical request would
+	// hit if the plugin looked.
+	prime := scopedTestContext(t, "prime")
+	if _, sc, err := plugin.PreLLMHook(prime, req); err != nil {
+		t.Fatalf("priming PreLLMHook failed: %v", err)
+	} else if sc != nil {
+		t.Fatalf("expected a miss while priming, got short-circuit %+v", sc)
+	}
+	primeRes := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+	}}
+	if _, _, err := plugin.PostLLMHook(prime, primeRes, nil); err != nil {
+		t.Fatalf("priming PostLLMHook failed: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+	store.mu.Lock()
+	written := len(store.addIDs)
+	store.mu.Unlock()
+	if written == 0 {
+		t.Fatal("priming request wrote no cache entry; the read half of this test would prove nothing")
+	}
+
+	probe := scopedTestContext(t, "prime")
+	probe.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	_, sc, err := plugin.PreLLMHook(probe, req)
+	if err != nil {
+		t.Fatalf("probe PreLLMHook failed: %v", err)
+	}
+	if sc != nil {
+		t.Fatal("a probe must not be served from cache")
+	}
+	if _, _, err := plugin.PostLLMHook(probe, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest},
+	}}, nil); err != nil {
+		t.Fatalf("probe PostLLMHook failed: %v", err)
+	}
+	plugin.WaitForPendingOperations()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.addIDs) != written {
+		t.Fatalf("a probe wrote %d cache entries, want 0", len(store.addIDs)-written)
+	}
+}
+
 // The placeholder vector says nothing about the prompt it was written for, so an entry stored
 // under it must never be a semantic candidate. Without that, a later and different prompt under
 // the same key, params and identity, whose embedding happens to lean toward the placeholder's
