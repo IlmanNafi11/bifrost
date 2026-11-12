@@ -30,6 +30,40 @@ func TestGenerateVirtualKeyHashCoversRelayAccess(t *testing.T) {
 	require.NotEqual(t, hash(granted), hash(cleared), "clearing the grants is a change")
 }
 
+// TestGenerateVirtualKeyHashCoversListedModels pins what the listed_models block contributes to the
+// config hash. A key without one must keep exactly the hash it had before the column existed, or
+// every existing key would re-sync from config.json on upgrade; a key with one must change the hash
+// when the listing changes, and the listing's order must not matter.
+func TestGenerateVirtualKeyHashCoversListedModels(t *testing.T) {
+	hash := func(vk tables.TableVirtualKey) string {
+		t.Helper()
+		h, err := GenerateVirtualKeyHash(vk)
+		require.NoError(t, err)
+		return h
+	}
+	base := tables.TableVirtualKey{ID: "vk-lm", Name: "prod", Value: *schemas.NewSecretVar("sk-bf-lm")}
+	plain := hash(base)
+	require.Equal(t, plain, hash(func() tables.TableVirtualKey {
+		vk := base
+		vk.ListedModels = []tables.TableListedModelEntry{}
+		return vk
+	}()), "a key from before the column must hash like one with no block")
+
+	gpt := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
+	other := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.5"}
+	rule := tables.TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	with := func(entries ...tables.TableListedModelEntry) string {
+		vk := base
+		vk.ListedModels = entries
+		return hash(vk)
+	}
+	require.NotEqual(t, plain, with(gpt), "declaring a listing is a change")
+	require.NotEqual(t, with(gpt), with(gpt, rule), "adding an entry is a change")
+	require.NotEqual(t, with(gpt), with(other), "swapping a model is a change")
+	require.NotEqual(t, with(gpt), with(rule), "a rule entry is not a model entry")
+	require.Equal(t, with(gpt, rule), with(rule, gpt), "listing order does not move the hash")
+}
+
 // TestGenerateRelayHash pins the relay hash formula and what moves it. The expected value is
 // fixed: a change to it means every relay stored with the old hash re-syncs from config.json on
 // the next start, overwriting its dashboard edits, so it must be deliberate.

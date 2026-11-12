@@ -1770,6 +1770,54 @@ func TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate(t *testing.T) {
 	require.ErrorContains(t, store.CreateVirtualKey(ctx, bad), "reserved")
 }
 
+// TestVirtualKeyListedModels_PersistsThroughCreateAndUpdate pins the listed_models round trip
+// through the real store: the update path names its columns explicitly, so a column left off that
+// list is silently never written, and nil must keep the stored block while [] is a real clear.
+func TestVirtualKeyListedModels_PersistsThroughCreateAndUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	gpt := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
+	rule := tables.TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	vk := &tables.TableVirtualKey{
+		ID: "vk-listed", Name: "Listed", Value: *schemas.NewSecretVar("vk-listed-value"),
+		ListedModels: []tables.TableListedModelEntry{gpt},
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []tables.TableListedModelEntry{gpt}, result.ListedModels)
+
+	vk.ListedModels = []tables.TableListedModelEntry{gpt, rule}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []tables.TableListedModelEntry{gpt, rule}, result.ListedModels, "an update must write the block")
+
+	// An update that does not set the block, such as a config.json sync of an entry without one,
+	// keeps what is stored.
+	vk.ListedModels = nil
+	vk.Description = "edited elsewhere"
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []tables.TableListedModelEntry{gpt, rule}, result.ListedModels, "a nil block must keep the stored value")
+	assert.Equal(t, "edited elsewhere", result.Description)
+
+	vk.ListedModels = []tables.TableListedModelEntry{}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, result.ListedModels, "an explicit [] must persist as deny-all, not read back as absent")
+	assert.Empty(t, result.ListedModels)
+
+	bad := &tables.TableVirtualKey{
+		ID: "vk-listed-wildcard", Name: "Listed Wildcard", Value: *schemas.NewSecretVar("vk-listed-wildcard-value"),
+		ListedModels: []tables.TableListedModelEntry{{Provider: "openai", Model: "*"}},
+	}
+	require.ErrorContains(t, store.CreateVirtualKey(ctx, bad), "wildcard")
+}
+
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

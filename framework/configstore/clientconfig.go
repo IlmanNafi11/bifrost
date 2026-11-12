@@ -1475,6 +1475,32 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
 	}
+	// Hash listed_models only when the key has one, so every key that predates the column keeps the
+	// hash config sync already stored for it. Entries are sorted by their identity before encoding,
+	// so the order a config.json author wrote them in cannot move the hash.
+	if len(vk.ListedModels) > 0 {
+		entries := make([]tables.TableListedModelEntry, len(vk.ListedModels))
+		copy(entries, vk.ListedModels)
+		for i := range entries {
+			entries[i].RoutingRuleName = ""
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			a, b := entries[i], entries[j]
+			if a.Provider != b.Provider {
+				return a.Provider < b.Provider
+			}
+			if a.Model != b.Model {
+				return a.Model < b.Model
+			}
+			return a.RoutingRuleID < b.RoutingRuleID
+		})
+		data, err := sonic.Marshal(entries)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("listedModels:"))
+		hash.Write(data)
+	}
 	// Hash relay grants only when the key declares them, so every key that predates
 	// relays keeps its hash. Grant names are sorted so file order cannot move it.
 	if vk.RelayGrants != nil {
