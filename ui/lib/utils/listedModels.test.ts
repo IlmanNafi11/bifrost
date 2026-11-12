@@ -1,6 +1,7 @@
 import type { RoutingRule } from "@/lib/types/routingRules";
 import { describe, expect, it } from "vitest";
 import {
+	defaultListedProvider,
 	isModelOffered,
 	listedEntryFromModel,
 	listedEntryFromRule,
@@ -8,6 +9,8 @@ import {
 	listedModelPickerProviders,
 	listedModelsFromVirtualKey,
 	listedModelsPayload,
+	listedProviderOptions,
+	listedRuleOptions,
 	listingRuleOptions,
 	type ListedModelsScope,
 	MAX_LISTED_MODELS_ENTRIES,
@@ -168,6 +171,37 @@ describe("entry helpers", () => {
 		expect(listedEntryFromRule("coding")).toEqual({ provider: "", model: "", routing_rule: "coding" });
 		expect(listedEntryKey(listedEntryFromModel("openai", "gpt-5.4"))).toBe("model:openai/gpt-5.4");
 		expect(listedEntryKey(listedEntryFromRule("coding"))).toBe("rule:coding");
+	});
+});
+
+describe("editor option helpers", () => {
+	const configs = [
+		{ provider: "openai", allowed_models: ["*"] },
+		{ provider: "anthropic", allowed_models: [] },
+	];
+
+	it("offers the rules the listing would show, never a user-scoped one", () => {
+		expect(listedRuleOptions([rule({ name: "coding" }), rule({ name: "own", scope: "user", scope_id: "u-1" })], scope)).toEqual([
+			{ id: "rule-id", name: "coding" },
+		]);
+	});
+
+	it("starts the model picker on the first provider that allows something", () => {
+		expect(defaultListedProvider(configs, false)).toBe("openai");
+		expect(defaultListedProvider([{ provider: "anthropic", allowed_models: [] }], false)).toBe("");
+	});
+
+	it("lets allow_all_providers offer a provider with no config of its own", () => {
+		const noneAllowing = [{ provider: "groq", allowed_models: [] }];
+		expect(defaultListedProvider(noneAllowing, false)).toBe("");
+		expect(defaultListedProvider(noneAllowing, true)).toBe("groq");
+	});
+
+	it("lists offered providers plus a provider the block already names outside any config", () => {
+		expect(listedProviderOptions(configs, [], false)).toEqual(["openai"]);
+		expect(listedProviderOptions(configs, [listedEntryFromModel("mistral", "m-large")], false)).toEqual(["openai"]);
+		expect(listedProviderOptions(configs, [listedEntryFromModel("mistral", "m-large")], true)).toEqual(["openai", "mistral"]);
+		expect(listedProviderOptions(configs, [listedEntryFromModel("anthropic", "claude-opus")], false)).toEqual(["openai", "anthropic"]);
 	});
 });
 

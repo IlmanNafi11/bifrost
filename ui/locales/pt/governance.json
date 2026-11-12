@@ -702,5 +702,22 @@
 		"remove": "Remover",
 		"update": "Atualizar",
 		"add": "Adicionar"
+	},
+	"listedModels": {
+		"label": "Modelos listados permitidos",
+		"moreInfo": "Sobre os modelos listados permitidos",
+		"tooltip": "Quando ativado, apenas os modelos e as regras de roteamento listados aqui aparecem na resposta /v1/models desta chave, e qualquer outra solicitação é recusada. Uma entrada de regra de roteamento também permite os modelos por trás dessa regra. Deixe desativado para manter o acesso atual da chave; ative com uma lista vazia para negar todos os modelos.",
+		"offHint": "Desativado: esta chave oferece e aceita todos os modelos que suas configurações de provedor permitem.",
+		"empty": "Ainda não há entradas: com este bloco ativado e vazio, nenhum modelo é oferecido ou aceito para a chave. Adicione abaixo um modelo ou uma regra de roteamento.",
+		"tabModels": "Modelos",
+		"tabRules": "Regras de roteamento",
+		"routingRule": "Regra de roteamento",
+		"selectProvider": "Provedor",
+		"selectModels": "Selecionar modelos",
+		"selectRule": "Adicionar uma regra de roteamento",
+		"noRules": "Nenhuma regra de roteamento no escopo para adicionar",
+		"add": "Adicionar",
+		"removeAria": "Remover {{entry}}",
+		"capReached": "Limite de {{max}} entradas atingido"
 	}
 }

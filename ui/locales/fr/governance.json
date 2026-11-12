@@ -702,5 +702,22 @@
 		"remove": "Supprimer",
 		"update": "Mettre à jour",
 		"add": "Ajouter"
+	},
+	"listedModels": {
+		"label": "Modèles listés autorisés",
+		"moreInfo": "À propos des modèles listés autorisés",
+		"tooltip": "Une fois activé, seuls les modèles et les règles de routage listés ici apparaissent dans la réponse /v1/models de cette clé, et toute autre demande est refusée. Une entrée de règle de routage autorise aussi les modèles derrière cette règle. Laissez-le désactivé pour conserver l’accès actuel de la clé ; activez-le avec une liste vide pour refuser tous les modèles.",
+		"offHint": "Désactivé : cette clé propose et accepte tous les modèles autorisés par ses configurations de fournisseur.",
+		"empty": "Aucune entrée pour l’instant : avec ce bloc activé et vide, aucun modèle n’est proposé ni accepté pour la clé. Ajoutez ci-dessous un modèle ou une règle de routage.",
+		"tabModels": "Modèles",
+		"tabRules": "Règles de routage",
+		"routingRule": "Règle de routage",
+		"selectProvider": "Fournisseur",
+		"selectModels": "Sélectionner des modèles",
+		"selectRule": "Ajouter une règle de routage",
+		"noRules": "Aucune règle de routage dans le périmètre à ajouter",
+		"add": "Ajouter",
+		"removeAria": "Supprimer {{entry}}",
+		"capReached": "Limite de {{max}} entrées atteinte"
 	}
 }

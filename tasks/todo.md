@@ -103,7 +103,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `ui/lib/types/governance.ts`, `.../virtualKeySheet.tsx`, test terkait
   - Deps: T11 · Size: S
 
-- [ ] **T14 — `listedModelsEditor.tsx`**
+- [x] **T14 — `listedModelsEditor.tsx`**
   - Acceptance: add/remove; picker ⊆ allowed+rule; testid `vk-listed-models-*`; cap 100; Vitest hijau.
   - Verify: `cd ui && npx vitest run components/ui/listedModelsEditor`; `npm run typecheck`
   - Files: `ui/components/ui/listedModelsEditor.tsx` (baru) + test
@@ -115,7 +115,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`
   - Deps: T14 · Size: S
 
-- [ ] **T16 — i18n semua locale**
+- [x] **T16 — i18n semua locale**
   - Acceptance: `npm run i18n:check` exit 0; tidak ada string hardcoded baru.
   - Verify: `cd ui && npm run i18n:check`
   - Files: `ui/locales/*/governance.json` (12)

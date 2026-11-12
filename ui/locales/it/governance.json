@@ -702,5 +702,22 @@
 		"remove": "Rimuovi",
 		"update": "Aggiorna",
 		"add": "Aggiungi"
+	},
+	"listedModels": {
+		"label": "Modelli elencati consentiti",
+		"moreInfo": "Informazioni sui modelli elencati consentiti",
+		"tooltip": "Quando è attivo, solo i modelli e le regole di routing elencati qui compaiono nella risposta /v1/models di questa chiave e ogni altra richiesta viene rifiutata. Una voce di regola di routing consente anche i modelli dietro quella regola. Lascialo disattivato per mantenere l’accesso attuale della chiave; attivalo con un elenco vuoto per negare tutti i modelli.",
+		"offHint": "Disattivato: questa chiave offre e accetta tutti i modelli consentiti dalle sue configurazioni dei provider.",
+		"empty": "Nessuna voce: con questo blocco attivo e vuoto, alla chiave non viene offerto né accettato alcun modello. Aggiungi sotto un modello o una regola di routing.",
+		"tabModels": "Modelli",
+		"tabRules": "Regole di routing",
+		"routingRule": "Regola di routing",
+		"selectProvider": "Provider",
+		"selectModels": "Seleziona modelli",
+		"selectRule": "Aggiungi una regola di routing",
+		"noRules": "Nessuna regola di routing nell’ambito da aggiungere",
+		"add": "Aggiungi",
+		"removeAria": "Rimuovi {{entry}}",
+		"capReached": "Limite di {{max}} voci raggiunto"
 	}
 }

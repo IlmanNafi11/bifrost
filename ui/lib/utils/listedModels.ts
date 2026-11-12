@@ -172,6 +172,34 @@ export function listedModelsPayload(entries: ListedModelsEntry[]): ListedModelsW
 		);
 }
 
+/** The routing rules a block may name, as the listing shows them: enabled, in scope, unambiguous. */
+export function listedRuleOptions(rules: RoutingRule[], scope: ListedModelsScope): ListingRuleOption[] {
+	return listingRuleOptions(rules, scope);
+}
+
+/**
+ * The provider the add-model picker starts on: the first one the block could name at all, so the
+ * model search is scoped without an extra pick for the common single-provider key. Empty when no
+ * provider offers a model, which leaves the picker disabled.
+ */
+export function defaultListedProvider(configs: ListedProviderConfig[], allowAllProviders: boolean): string {
+	return listedModelPickerProviders(configs)[0] ?? (allowAllProviders ? (configs[0]?.provider ?? "") : "");
+}
+
+/** The model picker's provider list: the configured providers that allow something, plus any outside provider the block already names. */
+export function listedProviderOptions(configs: ListedProviderConfig[], entries: ListedModelsEntry[], allowAllProviders: boolean): string[] {
+	const offered = listedModelPickerProviders(configs);
+	const known = new Set(configs.map((config) => config.provider));
+	const named = entries
+		.map((entry) => entry.provider.trim())
+		.filter((provider) => provider !== "" && (known.has(provider) || allowAllProviders));
+	const values: string[] = [];
+	for (const provider of [...offered, ...named]) {
+		if (!values.includes(provider)) values.push(provider);
+	}
+	return values;
+}
+
 export interface ValidateListedModelsInput {
 	providerConfigs: ListedProviderConfig[];
 	rules: RoutingRule[];

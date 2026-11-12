@@ -702,5 +702,22 @@
 		"requestTooltip": "{{used}} / {{max}} requests",
 		"keyCount_one": "{{count}} key",
 		"keyCount_other": "{{count}} keys"
+	},
+	"listedModels": {
+		"label": "Allowed listed models",
+		"moreInfo": "About allowed listed models",
+		"tooltip": "When set, only the models and routing rules listed here appear in this key's /v1/models response, and a request for anything else is refused. A routing rule entry also allows the models behind that rule. Leave it off to keep the key\u0027s current access; switch it on with an empty list to deny every model.",
+		"offHint": "Off: this key offers and accepts every model its provider configurations allow.",
+		"empty": "No entries yet: with this block on and empty, the key is offered and accepts no model. Add a model or a routing rule below.",
+		"tabModels": "Models",
+		"tabRules": "Routing rules",
+		"routingRule": "Routing rule",
+		"selectProvider": "Provider",
+		"selectModels": "Select models",
+		"selectRule": "Add a routing rule",
+		"noRules": "No routing rule in scope is left to add",
+		"add": "Add",
+		"removeAria": "Remove {{entry}}",
+		"capReached": "At the limit of {{max}} entries"
 	}
 }

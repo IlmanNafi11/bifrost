@@ -702,5 +702,22 @@
 		"remove": "Eliminar",
 		"update": "Actualizar",
 		"add": "Agregar"
+	},
+	"listedModels": {
+		"label": "Modelos listados permitidos",
+		"moreInfo": "Acerca de los modelos listados permitidos",
+		"tooltip": "Cuando está activado, solo los modelos y las reglas de enrutamiento listados aquí aparecen en la respuesta /v1/models de esta clave, y se rechaza cualquier otra solicitud. Una entrada de regla de enrutamiento también permite los modelos detrás de esa regla. Déjelo desactivado para conservar el acceso actual de la clave; actívelo con una lista vacía para denegar todos los modelos.",
+		"offHint": "Desactivado: esta clave ofrece y acepta todos los modelos que permiten sus configuraciones de proveedor.",
+		"empty": "Aún no hay entradas: con este bloque activado y vacío, no se ofrece ni se acepta ningún modelo para la clave. Añada abajo un modelo o una regla de enrutamiento.",
+		"tabModels": "Modelos",
+		"tabRules": "Reglas de enrutamiento",
+		"routingRule": "Regla de enrutamiento",
+		"selectProvider": "Proveedor",
+		"selectModels": "Seleccionar modelos",
+		"selectRule": "Añadir una regla de enrutamiento",
+		"noRules": "No queda ninguna regla de enrutamiento en el ámbito por añadir",
+		"add": "Añadir",
+		"removeAria": "Eliminar {{entry}}",
+		"capReached": "Se alcanzó el límite de {{max}} entradas"
 	}
 }

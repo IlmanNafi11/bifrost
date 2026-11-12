@@ -702,5 +702,22 @@
 		"remove": "Entfernen",
 		"update": "Aktualisieren",
 		"add": "Hinzufügen"
+	},
+	"listedModels": {
+		"label": "Erlaubte gelistete Modelle",
+		"moreInfo": "Über erlaubte gelistete Modelle",
+		"tooltip": "Wenn gesetzt, erscheinen nur die hier gelisteten Modelle und Routing-Regeln in der /v1/models-Antwort dieses Schlüssels, und Anfragen für alles andere werden abgelehnt. Ein Routing-Regel-Eintrag erlaubt zusätzlich die Modelle hinter dieser Regel. Aus lassen, damit der Schlüssel seinen bisherigen Zugriff behält; einschalten mit leerer Liste, um jedes Modell zu verweigern.",
+		"offHint": "Aus: dieser Schlüssel bietet und akzeptiert jedes Modell, das seine Provider-Konfigurationen erlauben.",
+		"empty": "Noch keine Einträge: mit diesem Block an und leer werden dem Schlüssel keine Modelle angeboten und keine akzeptiert. Fügen Sie unten ein Modell oder eine Routing-Regel hinzu.",
+		"tabModels": "Modelle",
+		"tabRules": "Routing-Regeln",
+		"routingRule": "Routing-Regel",
+		"selectProvider": "Provider",
+		"selectModels": "Modelle auswählen",
+		"selectRule": "Routing-Regel hinzufügen",
+		"noRules": "Keine Routing-Regel im Geltungsbereich mehr hinzuzufügen",
+		"add": "Hinzufügen",
+		"removeAria": "{{entry}} entfernen",
+		"capReached": "Limit von {{max}} Einträgen erreicht"
 	}
 }
