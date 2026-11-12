@@ -189,7 +189,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: T8, T10. Files: `tests/e2e/api/collections/provider-harness.json`, `tmp/` (artefak).
   - Scope: S (1).
 
-- [ ] **Task 18: Docs**
+- [x] **Task 18: Docs**
   - Description: paragraf `listed_models` di `docs/deployment-guides/config-json/governance.mdx` (bentuk, nil vs [], entri model vs rule, cap 100, nama→ID di load).
   - Acceptance: contoh konsisten; tidak ada config baru yang tidak didokumentasikan.
   - Verify: review manual.

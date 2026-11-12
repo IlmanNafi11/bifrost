@@ -132,7 +132,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `tests/e2e/api/collections/provider-harness.json`, `tmp/`
   - Deps: T8, T10 · Size: S
 
-- [ ] **T18 — Docs**
+- [x] **T18 — Docs**
   - Acceptance: `listed_models` terdokumentasi (nil vs [], model vs rule, cap 100, nama→ID).
   - Verify: review manual
   - Files: `docs/deployment-guides/config-json/governance.mdx`
