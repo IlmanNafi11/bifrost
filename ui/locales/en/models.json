@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "Test this model",
+		"aria": "Test {{label}}",
+		"keyAuto": "auto",
+		"successTitle": "{{label}} responded",
+		"failedTitle": "{{label}} failed",
+		"failed": "The provider returned no message",
+		"streamingDescription": "TTFT {{ttft}} ms · total {{total}} ms · key {{key}}",
+		"unaryDescription": "Latency {{total}} ms · key {{key}}",
+		"failedDescription": "{{reason}} · key {{key}}",
+		"modeUnsupported": "This mode cannot be tested"
+	},
 	"providers": {
 		"title": "Providers",
 		"configuredProviders": "Configured Providers",
