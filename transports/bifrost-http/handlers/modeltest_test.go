@@ -339,3 +339,93 @@ func TestModelProbe_RouteIsRegistered(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "POST /api/models/test must be routed to the handler: %s", ctx.Response.Body())
 	assert.True(t, decodeProbe(t, ctx).OK)
 }
+
+// responsesUpstream streams one output-text delta and a terminal event.
+func responsesUpstream(tb testing.TB) *httptest.Server {
+	tb.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			tb.Errorf("unexpected upstream path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"delta\":\"hi\"}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"r1\",\"model\":\"gpt-4o-mini\",\"status\":\"completed\"}}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	tb.Cleanup(server.Close)
+	return server
+}
+
+// completionUpstream streams one text delta and a terminal frame.
+func completionUpstream(tb testing.TB) *httptest.Server {
+	tb.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/completions" {
+			tb.Errorf("unexpected upstream path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"t1\",\"object\":\"text_completion\",\"created\":1,\"model\":\"gpt-3.5-turbo-instruct\","+
+			"\"choices\":[{\"index\":0,\"text\":\"hi\",\"finish_reason\":null}]}\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		fmt.Fprint(w, "data: {\"id\":\"t1\",\"object\":\"text_completion\",\"created\":1,\"model\":\"gpt-3.5-turbo-instruct\","+
+			"\"choices\":[{\"index\":0,\"text\":\"\",\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	tb.Cleanup(server.Close)
+	return server
+}
+
+func TestModelProbeModeDispatch_StreamingModesReportTTFT(t *testing.T) {
+	cases := []struct {
+		mode     string
+		model    string
+		upstream func(testing.TB) *httptest.Server
+	}{
+		{"chat", "gpt-4o-mini", func(tb testing.TB) *httptest.Server { return chatUpstream(tb, 0, nil) }},
+		{"responses", "gpt-4o-mini", responsesUpstream},
+		{"completion", "gpt-3.5-turbo-instruct", completionUpstream},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			upstream := tc.upstream(t)
+			catalog := probeCatalog(t, map[string]string{"openai/" + tc.model: tc.mode})
+			h, _ := newProbeHandler(t, upstream.URL, catalog)
+
+			ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: tc.model})
+			h.testModel(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+			response := decodeProbe(t, ctx)
+			require.True(t, response.OK, "%s: %s", tc.mode, response.Error)
+			assert.Equal(t, tc.mode, response.Mode)
+			require.NotNil(t, response.TTFTMs, "%s is a streaming mode and must report TTFT", tc.mode)
+			assert.GreaterOrEqual(t, response.TotalMs, *response.TTFTMs)
+		})
+	}
+}
+
+func TestModelProbeModeDispatch_UnrecognizedModeIsRejected(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/live-model": "live"})
+	h, _ := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "live-model"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "mode not supported for probe: live")
+}

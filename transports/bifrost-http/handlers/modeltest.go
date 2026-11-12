@@ -30,8 +30,9 @@ const (
 // whose catalog row names any other mode (container_create, live, an unknown
 // value) is refused rather than guessed at.
 var modelProbeModes = map[string]struct{}{
-	"chat":      {},
-	"embedding": {},
+	"chat":       {},
+	"responses":  {},
+	"completion": {},
 }
 
 // modelTestPayload is the body of POST /api/models/test.
@@ -165,6 +166,10 @@ func (h *ProviderHandler) dispatchModelProbe(ctx *schemas.BifrostContext, provid
 	switch mode {
 	case "chat":
 		return h.probeChat(ctx, provider, model, response, start)
+	case "responses":
+		return h.probeResponses(ctx, provider, model, response, start)
+	case "completion":
+		return h.probeCompletion(ctx, provider, model, response, start)
 	default:
 		return &schemas.BifrostError{Error: &schemas.ErrorField{Message: fmt.Sprintf("mode not supported for probe: %s", mode)}}
 	}
@@ -198,6 +203,65 @@ func (h *ProviderHandler) probeChat(ctx *schemas.BifrostContext, provider schema
 				return true
 			}
 			if choice.Delta != nil && choice.Delta.Content != nil && *choice.Delta.Content != "" {
+				return true
+			}
+		}
+		return false
+	}, response)
+}
+
+// probeResponses runs the Responses API probe: one input message and a token cap,
+// drained to the end, TTFT taken at the first event carrying output.
+func (h *ProviderHandler) probeResponses(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, response *ModelTestResponse, start time.Time) *schemas.BifrostError {
+	prompt := modelProbePrompt
+	maxTokens := modelProbeMaxTokens
+	role := schemas.ResponsesInputMessageRoleUser
+	stream, bifrostErr := h.client.ResponsesStreamRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Role:    &role,
+			Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
+		}},
+		Params: &schemas.ResponsesParameters{MaxOutputTokens: &maxTokens},
+	})
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	return drainProbeStream(ctx, stream, start, func(chunk *schemas.BifrostStreamChunk) bool {
+		if chunk == nil || chunk.BifrostResponsesStreamResponse == nil {
+			return false
+		}
+		event := chunk.BifrostResponsesStreamResponse
+		return (event.Delta != nil && *event.Delta != "") || event.Text != nil || event.Item != nil || event.Response != nil
+	}, response)
+}
+
+// probeCompletion runs the legacy text-completion probe, drained to the end with
+// TTFT taken at the first choice carrying text or a finish reason.
+func (h *ProviderHandler) probeCompletion(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, response *ModelTestResponse, start time.Time) *schemas.BifrostError {
+	prompt := modelProbePrompt
+	maxTokens := modelProbeMaxTokens
+	stream, bifrostErr := h.client.TextCompletionStreamRequest(ctx, &schemas.BifrostTextCompletionRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    &schemas.TextCompletionInput{PromptStr: &prompt},
+		Params:   &schemas.TextCompletionParameters{MaxTokens: &maxTokens},
+	})
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	return drainProbeStream(ctx, stream, start, func(chunk *schemas.BifrostStreamChunk) bool {
+		if chunk == nil || chunk.BifrostTextCompletionResponse == nil {
+			return false
+		}
+		for _, choice := range chunk.BifrostTextCompletionResponse.Choices {
+			if choice.FinishReason != nil {
+				return true
+			}
+			if choice.TextCompletionResponseChoice != nil && choice.Text != nil && *choice.Text != "" {
 				return true
 			}
 		}
