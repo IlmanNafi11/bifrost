@@ -138235,6 +138235,67 @@
               ]
             }
           },
+          "listed_models": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "What this virtual key sees in /v1/models, and the model names it may call. Each entry names a provider model (`provider` + `model`) or a routing rule (`routing_rule`, by name); a listed rule also opens the rule's targets and fallbacks, which the key may then call without naming them. A model entry must sit inside the provider config's allowed_models and outside its blacklisted_models. Omitted or null leaves the block off, so /v1/models and the gate behave as they do without it; an explicit empty array means the key may call nothing but its listed rules. At most 100 entries.\n",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "description": "One entry of a virtual key's listed_models block: a provider model, or a routing rule named by name. Never both, and never a wildcard - leaving the block out is how a key allows every model.\n",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "Provider name, as configured. Required for a model entry."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model name on that provider. Required for a model entry, and must sit inside the provider config's allowed_models and outside its blacklisted_models."
+                },
+                "routing_rule": {
+                  "type": "string",
+                  "description": "Name of a routing rule the key may call. The rule has to exist, be enabled, and be scoped to the key, its team, its customer or the deployment. Listed and called by name, never as provider/model."
+                }
+              },
+              "oneOf": [
+                {
+                  "description": "A model entry names the provider and the model together.",
+                  "required": [
+                    "provider",
+                    "model"
+                  ],
+                  "not": {
+                    "required": [
+                      "routing_rule"
+                    ]
+                  }
+                },
+                {
+                  "description": "A rule entry names only the rule.",
+                  "required": [
+                    "routing_rule"
+                  ],
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "provider"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "model"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ],
+              "additionalProperties": false
+            }
+          },
           "disable_content_logging": {
             "type": [
               "boolean",
@@ -138676,6 +138737,64 @@
               "maxLength": 512
             }
           },
+          "listed_models": {
+            "type": "array",
+            "description": "The key's listed_models block, sent whole. Each entry names a provider model or a routing rule; a model entry must sit inside the provider config's allowed_models and outside its blacklisted_models, and a rule entry must name an existing, enabled rule in this key's scope (the key, its team, its customer, or global). At most 100 entries. Omitted leaves the block off; an explicit empty array denies every model but the listed rules. Listing a model requires provider_configs (or allow_all_providers).\n",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "description": "One entry of a virtual key's listed_models block: a provider model, or a routing rule named by name. Never both, and never a wildcard - leaving the block out is how a key allows every model.\n",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "Provider name, as configured. Required for a model entry."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model name on that provider. Required for a model entry, and must sit inside the provider config's allowed_models and outside its blacklisted_models."
+                },
+                "routing_rule": {
+                  "type": "string",
+                  "description": "Name of a routing rule the key may call. The rule has to exist, be enabled, and be scoped to the key, its team, its customer or the deployment. Listed and called by name, never as provider/model."
+                }
+              },
+              "oneOf": [
+                {
+                  "description": "A model entry names the provider and the model together.",
+                  "required": [
+                    "provider",
+                    "model"
+                  ],
+                  "not": {
+                    "required": [
+                      "routing_rule"
+                    ]
+                  }
+                },
+                {
+                  "description": "A rule entry names only the rule.",
+                  "required": [
+                    "routing_rule"
+                  ],
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "provider"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "model"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ],
+              "additionalProperties": false
+            }
+          },
           "provider_configs": {
             "type": "array",
             "description": "Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.",
@@ -138957,6 +139076,67 @@
           },
           "rate_limit": {
             "$ref": "#/components/schemas/UpdateRateLimitRequest"
+          },
+          "listed_models": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "Replaces the key's listed_models block as a whole. Omit (or send null) to leave it unchanged, send [] to deny every model but the listed rules, or send the entries. Each entry names a provider model or a routing rule, validated against the key's provider configs and routing rules as on create; at most 100 entries.\n",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "description": "One entry of a virtual key's listed_models block: a provider model, or a routing rule named by name. Never both, and never a wildcard - leaving the block out is how a key allows every model.\n",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "Provider name, as configured. Required for a model entry."
+                },
+                "model": {
+                  "type": "string",
+                  "description": "Model name on that provider. Required for a model entry, and must sit inside the provider config's allowed_models and outside its blacklisted_models."
+                },
+                "routing_rule": {
+                  "type": "string",
+                  "description": "Name of a routing rule the key may call. The rule has to exist, be enabled, and be scoped to the key, its team, its customer or the deployment. Listed and called by name, never as provider/model."
+                }
+              },
+              "oneOf": [
+                {
+                  "description": "A model entry names the provider and the model together.",
+                  "required": [
+                    "provider",
+                    "model"
+                  ],
+                  "not": {
+                    "required": [
+                      "routing_rule"
+                    ]
+                  }
+                },
+                {
+                  "description": "A rule entry names only the rule.",
+                  "required": [
+                    "routing_rule"
+                  ],
+                  "not": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "provider"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "model"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ],
+              "additionalProperties": false
+            }
           },
           "is_active": {
             "type": "boolean"

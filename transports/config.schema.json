@@ -1465,6 +1465,14 @@
                 "items": {
                   "$ref": "#/$defs/virtual_key_relay_grant"
                 }
+              },
+              "listed_models": {
+                "type": "array",
+                "description": "What this virtual key's /v1/models lists, and the model names it may call. Each entry names a provider model or a routing rule by name; a rule entry also opens the rule's targets and fallbacks. A model entry must sit inside the provider config's allowed_models and outside its blacklisted_models. Omitted means the block is off; an explicit empty array means the key may call nothing.",
+                "maxItems": 100,
+                "items": {
+                  "$ref": "#/$defs/virtual_key_listed_model"
+                }
               }
             },
             "required": [
@@ -5940,6 +5948,42 @@
       },
       "required": [
         "relay_name"
+      ],
+      "additionalProperties": false
+    },
+    "virtual_key_listed_model": {
+      "type": "object",
+      "description": "One entry of a virtual key's listed_models block: a provider model, or a routing rule named by name. Never both, and never a wildcard (leaving the block absent is how a key allows every model).",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider name, as configured"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "not": { "const": "*" },
+          "description": "Model name on that provider"
+        },
+        "routing_rule": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/]*$",
+          "description": "Name of a routing rule this key may call; listed and called by name, not as provider/model"
+        }
+      },
+      "oneOf": [
+        {
+          "$comment": "A model entry names the provider and the model together.",
+          "required": ["provider", "model"],
+          "not": { "required": ["routing_rule"] }
+        },
+        {
+          "$comment": "A rule entry names only the rule.",
+          "required": ["routing_rule"],
+          "not": { "anyOf": [{ "required": ["provider"] }, { "required": ["model"] }] }
+        }
       ],
       "additionalProperties": false
     },

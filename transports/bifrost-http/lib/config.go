@@ -4082,8 +4082,14 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	// update was skipped for the same reason aren't tracked here — their prior DB
 	// row is untouched and still valid, so their ID stays a legitimate reference.
 	skippedNewVirtualKeyIDs := make(map[string]bool)
+	// The file's listed_models blocks arrive as written: a rule entry names a rule by name, which is
+	// the entry's identity everywhere (stored, listed, called), so no name-to-id resolution happens
+	// at load. A block that breaks its own rules is reduced entry by entry instead of failing the
+	// key: a typo should not stop startup, and keeping the surviving entries holds the block to a
+	// subset of what the operator asked for, which is the safe direction for a permission.
 	for i, newVirtualKey := range configData.Governance.VirtualKeys {
-		fileVKHash, err := configstore.GenerateVirtualKeyHash(newVirtualKey)
+		sanitizeVirtualKeyListedModels(&configData.Governance.VirtualKeys[i])
+		fileVKHash, err := configstore.GenerateVirtualKeyHash(configData.Governance.VirtualKeys[i])
 		if err != nil {
 			logger.Warn("failed to generate virtual key hash for %s: %v", newVirtualKey.ID, err)
 			continue
@@ -7464,6 +7470,46 @@ func resolveMCPConfigClientIDs(
 	}
 
 	return resolvedConfigs
+}
+
+// sanitizeVirtualKeyListedModels reduces a config.json listed_models block to the entries the block
+// itself accepts: at most MaxVirtualKeyListedModelsEntries, each naming either a provider/model pair
+// or a routing rule by name, never both and never a wildcard.
+//
+// The block needs no name-to-id resolution - the rule name is the entry's identity in the store, in
+// /v1/models and in the call - so this is the whole load-time treatment. A refused entry is dropped
+// with a warning rather than failing the key: one typo should not stop startup, and the surviving
+// entries make the block a subset of what the operator declared, so a key can only ever end up
+// listing less than the file asked for. A block left with no entries is still written as [], which
+// keeps an all-malformed declaration a deny-all instead of silently turning the feature off.
+func sanitizeVirtualKeyListedModels(vk *configstoreTables.TableVirtualKey) {
+	if vk.ListedModels == nil {
+		return
+	}
+	kept := make([]configstoreTables.TableListedModelEntry, 0, len(vk.ListedModels))
+	keptRules := make(map[string]bool, len(vk.ListedModels))
+	for i, entry := range vk.ListedModels {
+		entry.Provider = strings.TrimSpace(entry.Provider)
+		entry.Model = strings.TrimSpace(entry.Model)
+		entry.RoutingRule = strings.TrimSpace(entry.RoutingRule)
+		if len(kept) >= configstoreTables.MaxVirtualKeyListedModelsEntries {
+			logger.Warn("virtual key %s: listed_models has more than %d entries; dropping entry %d and every entry after it", vk.ID, configstoreTables.MaxVirtualKeyListedModelsEntries, i)
+			break
+		}
+		if err := configstoreTables.ValidateVirtualKeyListedModels([]configstoreTables.TableListedModelEntry{entry}); err != nil {
+			logger.Warn("virtual key %s: dropping listed_models entry %d: %v", vk.ID, i, err)
+			continue
+		}
+		if entry.IsRule() {
+			if keptRules[entry.RoutingRule] {
+				// A repeated rule is the same grant written twice, so dropping it changes nothing.
+				continue
+			}
+			keptRules[entry.RoutingRule] = true
+		}
+		kept = append(kept, entry)
+	}
+	vk.ListedModels = kept
 }
 
 // virtualKeyLimitModelConfigID find-or-creates a key's all-models tier, for a provider or the key itself.

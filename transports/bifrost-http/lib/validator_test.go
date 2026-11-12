@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/framework/warp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -4500,6 +4501,38 @@ func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Errorf("expected metadata %s to pass validation, got error: %v", tt.metadata, err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_VirtualKeyListedModels pins the config.json shape of a virtual key's
+// listed_models block: each entry names a provider model or a routing rule by name, never both and
+// never a wildcard, matching what the API accepts at create and update time.
+func TestValidateConfigSchema_VirtualKeyListedModels(t *testing.T) {
+	tests := []struct {
+		name    string
+		listed  string
+		wantErr bool
+	}{
+		{name: "model and rule entries", listed: `[{"provider": "openai", "model": "gpt-5.4"}, {"routing_rule": "coding"}]`},
+		{name: "explicit empty block", listed: `[]`},
+		{name: "model without provider", listed: `[{"model": "gpt-5.4"}]`, wantErr: true},
+		{name: "provider without model", listed: `[{"provider": "openai"}]`, wantErr: true},
+		{name: "model and rule in one entry", listed: `[{"provider": "openai", "model": "gpt-5.4", "routing_rule": "coding"}]`, wantErr: true},
+		{name: "empty entry", listed: `[{}]`, wantErr: true},
+		{name: "wildcard model", listed: `[{"provider": "openai", "model": "*"}]`, wantErr: true},
+		{name: "over the entry cap", listed: `[` + strings.TrimSuffix(strings.Repeat(`{"routing_rule": "coding"},`, configstoreTables.MaxVirtualKeyListedModelsEntries+1), `,`) + `]`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"governance": {"virtual_keys": [{"id": "vk-1", "name": "Test Virtual Key", "value": "vk_test_123456", "listed_models": ` + tt.listed + `}]}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tt.wantErr && err == nil {
+				t.Errorf("expected listed_models %s to fail validation", tt.listed)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("expected listed_models %s to pass validation, got error: %v", tt.listed, err)
 			}
 		})
 	}

@@ -16294,7 +16294,13 @@ func TestSQLite_SourceOfTruthConfigJSON_LimitPruneGuardKeepsWhatItProtects(t *te
 // reports a failed sync through Fatal, which the test logger otherwise swallows.
 type fatalRecordingLogger struct {
 	testLogger
-	fatals []string
+	fatals   []string
+	warnings []string
+}
+
+// Warn records the message, so a test can assert on a load that drops something loudly.
+func (l *fatalRecordingLogger) Warn(msg string, args ...any) {
+	l.warnings = append(l.warnings, fmt.Sprintf(msg, args...))
 }
 
 // Fatal records the message instead of exiting.
@@ -27164,4 +27170,115 @@ func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
 		require.NoError(t, err, "virtual key %s is stored", id)
 		assert.Empty(t, vk.AgentGrants)
 	}
+}
+
+// TestListedModelsFromConfigFile drives a virtual key's listed_models block through config.json,
+// the path an operator configures rather than the API. An entry names the model pair or the routing
+// rule name, which is the block's whole identity, so the stored block is the file's block after
+// normalization: a deny-everything [] stays explicit, an absent field leaves the feature off, and an
+// entry the block's own rules refuse is dropped (fail closed - the key ends up listing less, never
+// more) without taking the rest of the key's declaration down with it.
+func TestListedModelsFromConfigFile(t *testing.T) {
+	initTestLogger()
+	load := func(t *testing.T, dir, listed string) (*Config, *fatalRecordingLogger) {
+		t.Helper()
+		log := &fatalRecordingLogger{}
+		SetLogger(log)
+		entry := `{"id": "vk-listed", "name": "vk-listed", "value": "sk-bf-listed"`
+		if listed != "" {
+			entry += `, "listed_models": ` + listed
+		}
+		entry += `}`
+		raw := `{
+			"client": {"initial_pool_size": 10, "allowed_origins": ["*"]},
+			"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(dir, "config.db")) + `}},
+			"providers": {"openai": {"keys": [{"value": "sk-openai"}]}},
+			"governance": {"virtual_keys": [` + entry + `]}
+		}`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0o644))
+		config, err := LoadConfig(context.Background(), dir)
+		require.NoError(t, err)
+		require.Empty(t, log.fatals, "the governance sync failed, which stops startup")
+		// The caller owns the close: some subtests reload over the same directory.
+		return config, log
+	}
+	storedListed := func(t *testing.T, config *Config) []tables.TableListedModelEntry {
+		t.Helper()
+		vk, err := config.ConfigStore.GetVirtualKey(context.Background(), "vk-listed")
+		require.NoError(t, err)
+		return vk.ListedModels
+	}
+
+	t.Run("model and rule entries are stored as written", func(t *testing.T) {
+		config, _ := load(t, t.TempDir(), `[{"provider": "openai", "model": "gpt-5.4"}, {"routing_rule": "coding"}]`)
+		defer config.Close(context.Background())
+		assert.Equal(t, []tables.TableListedModelEntry{
+			{Provider: "openai", Model: "gpt-5.4"},
+			{RoutingRule: "coding"},
+		}, storedListed(t, config))
+	})
+
+	t.Run("the hash covers the block, so an edit re-syncs and an unchanged file does not", func(t *testing.T) {
+		dir := t.TempDir()
+		config, _ := load(t, dir, `[{"provider": "openai", "model": "gpt-5.4"}, {"routing_rule": "coding"}]`)
+		first := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-listed")
+		firstHash := first.ConfigHash
+		config.Close(context.Background())
+
+		// The same file again: nothing to sync, the stored block (and hash) is kept as it was.
+		config, _ = load(t, dir, `[{"provider": "openai", "model": "gpt-5.4"}, {"routing_rule": "coding"}]`)
+		assert.Equal(t, firstHash, verifyVirtualKeyInDB(t, config.ConfigStore, "vk-listed").ConfigHash,
+			"an unchanged block must not look like drift on restart")
+		config.Close(context.Background())
+
+		// Dropping the rule moves the hash, so the file's narrower block is what gets stored.
+		config, _ = load(t, dir, `[{"provider": "openai", "model": "gpt-5.4"}]`)
+		vk := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-listed")
+		assert.NotEqual(t, firstHash, vk.ConfigHash, "a changed block has to re-sync")
+		assert.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, vk.ListedModels)
+		config.Close(context.Background())
+	})
+
+	t.Run("an empty block stays a deny-all, not off", func(t *testing.T) {
+		config, _ := load(t, t.TempDir(), `[]`)
+		defer config.Close(context.Background())
+		listed := storedListed(t, config)
+		require.NotNil(t, listed, "an explicit [] denies every model and must not load as absent")
+		assert.Empty(t, listed)
+	})
+
+	t.Run("an absent block leaves the feature off", func(t *testing.T) {
+		config, _ := load(t, t.TempDir(), "")
+		defer config.Close(context.Background())
+		assert.Nil(t, storedListed(t, config))
+	})
+
+	t.Run("entries past the cap are dropped, not stored", func(t *testing.T) {
+		entries := make([]string, configstoreTables.MaxVirtualKeyListedModelsEntries+1)
+		for i := range entries {
+			entries[i] = fmt.Sprintf(`{"provider": "openai", "model": "model-%d"}`, i)
+		}
+		config, log := load(t, t.TempDir(), `[`+strings.Join(entries, ",")+`]`)
+		defer config.Close(context.Background())
+		assert.Len(t, storedListed(t, config), configstoreTables.MaxVirtualKeyListedModelsEntries)
+		require.NotEmpty(t, log.warnings, "dropping an entry is logged so the operator can fix the file")
+		assert.Contains(t, strings.Join(log.warnings, "\n"), "listed_models")
+	})
+
+	t.Run("a malformed entry is dropped and the rest of the block is kept", func(t *testing.T) {
+		config, log := load(t, t.TempDir(),
+			`[{"provider": "openai", "model": "gpt-5.4", "routing_rule": "coding"}, {"provider": "openai", "model": "gpt-5.4"}]`)
+		defer config.Close(context.Background())
+		assert.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, storedListed(t, config))
+		require.NotEmpty(t, log.warnings, "dropping an entry is logged so the operator can fix the file")
+		assert.Contains(t, strings.Join(log.warnings, "\n"), "listed_models")
+	})
+
+	t.Run("a block whose every entry is malformed denies every model", func(t *testing.T) {
+		config, _ := load(t, t.TempDir(), `[{"provider": "openai", "model": "*"}]`)
+		defer config.Close(context.Background())
+		listed := storedListed(t, config)
+		require.NotNil(t, listed, "dropping the last entry must not turn the block off")
+		assert.Empty(t, listed)
+	})
 }
