@@ -10,7 +10,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `framework/configstore/tables/virtualkey.go`, `virtualkey_test.go`
   - Deps: none · Size: S
 
-- [ ] **T2 — Migration `add_virtual_key_listed_models_column`**
+- [x] **T2 — Migration `add_virtual_key_listed_models_column`**
   - Acceptance: migration ter-register ID baru; idempotent SQLite/Postgres; migration test hijau.
   - Verify: `make test-framework` (migration)
   - Files: `framework/configstore/migrations.go`

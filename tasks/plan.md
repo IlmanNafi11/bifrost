@@ -51,7 +51,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: None. Files: `framework/configstore/tables/virtualkey.go`, `virtualkey_test.go` (existing).
   - Scope: S (2).
 
-- [ ] **Task 2: Migration `add_virtual_key_listed_models_column`**
+- [x] **Task 2: Migration `add_virtual_key_listed_models_column`**
   - Description: `migrationAddVirtualKeyListedModelsColumn` mirroring `migrationAddVirtualKeyMetadataColumn` (migrations.go:16327) — `addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "ListedModels")` via `setMigrationLockTimeout`; registration di akhir `configstoreMigrationSteps` (setelah baris 592, ID baru unik); Rollback non-rollbackable.
   - Acceptance: migration ter-register dengan ID baru; SQLite + Postgres column-exists idempotent; `make test-framework` migration test hijau.
   - Verify: `make test-framework TESTCASE=Migration` (atau `cd framework && GOWORK=off go test ./configstore/ -run Migration`).
