@@ -69,14 +69,14 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 4: Listing
 
-- [ ] **T10 — `filterModelsForAccess` listed-aware + entri rule**
+- [x] **T10 — `filterModelsForAccess` listed-aware + entri rule**
   - Acceptance: `/v1/models` = persis entri + rule aktif/cocok; dashboard tidak terganggu (D9).
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'FilterModelsForAccess|ListedModels'`
   - Files: `plugins/governance/utils.go`, `permits_test.go`
   - Deps: T7, T8 · Size: M
 
 ### Checkpoint: Backend gate
-- [ ] `make test-governance` + `make test-plugins` hijau
+- [x] `make test-governance` + `make test-plugins` hijau
 
 ## Phase 5: Handler + config
 

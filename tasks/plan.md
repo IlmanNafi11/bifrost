@@ -117,7 +117,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 4: Listing
 
-- [ ] **Task 10: `filterModelsForAccess` listed-aware + entri rule**
+- [x] **Task 10: `filterModelsForAccess` listed-aware + entri rule**
   - Description: `filterModelsForAccess` (utils.go:134) — saat access membawa `ListedModels`, daftar berisi tepat: entry model yang ada di `ListedModels` (prefix `provider/model`, D10) + entry rule (nama polos, dari `ListedRules` yang aktif + scope cocok). Saat access nil (no listing) → perilaku lama. Wiring `PostLLMHook` (main.go:1639) tidak berubah — lewat access yang sama.
   - Acceptance: `/v1/models` VK ber-listed = persis entri + rule; rule nonaktif/scope lain hilang; dashboard `/api/models` tidak terpengaruh (D9, tidak lewat jalur ini).
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'FilterModelsForAccess|ListedModels'`.
@@ -125,7 +125,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Scope: M (2).
 
 ### Checkpoint: Backend gate
-- [ ] `make test-governance` dan `make test-plugins` hijau
+- [x] `make test-governance` dan `make test-plugins` hijau
 - [ ] Manual: VK ber-listed memanggil non-listed → 403; `/v1/models` listing tepat
 
 ### Phase 5: Handler + config
