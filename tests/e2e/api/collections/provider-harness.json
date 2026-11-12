@@ -314377,6 +314377,255 @@
           }
         }
       ]
+    },
+    {
+      "name": "325. Model probe hides itself from logs (model-probe)",
+      "description": "POST /api/models/test sends one real request through the gateway to tell an operator whether a model works. It must measure TTFT for a streaming mode and total latency for a unary one, and it must leave no trace: the probe sets the reserved IsProbe flag, which the logging, governance and semantic-cache plugins read, so no log row, cost, budget or stats entry is written. The cases share one x-bf-session-id: a control chat is recorded in it first, proving the session records ordinary traffic, and each probe afterwards pins that the session's log count stays at one. The last case pins the malformed-request contract, since the mode the server probes is read from the catalog rather than the body.",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini model-probe: control chat is recorded in the probe session",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One session for the whole folder: a zero row count only proves the probe was hidden if",
+                  "// the same session demonstrably records an ordinary request.",
+                  "if (!pm.collectionVariables.get('modelProbeSession')) {",
+                  "  pm.collectionVariables.set('modelProbeSession', 'model-probe-' + Date.now());",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('model-probe control: chat answered', function () { pm.expect(pm.response.code, pm.response.text()).to.be.below(400); });",
+                  "var session = pm.collectionVariables.get('modelProbeSession');",
+                  "function check(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/sessions/' + encodeURIComponent(session) + '?limit=100', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) {",
+                  "      if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+                  "      pm.test('model-probe control: session log read succeeded', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var body = res.json();",
+                  "    var logs = body.logs || [];",
+                  "    if (logs.length > 0) { pm.test('model-probe control: the session records the ordinary request', function () { pm.expect(logs.length, JSON.stringify(body).slice(0, 300)).to.be.above(0); }); return; }",
+                  "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+                  "    pm.test('model-probe control: condition reached', function () { pm.expect.fail('session ' + session + ' never reached the expected log count; last body: ' + JSON.stringify(body).slice(0, 300)); });",
+                  "  });",
+                  "}",
+                  "check(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{modelProbeSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hello in one short sentence.\"}],\"max_tokens\":20}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini model-probe: chat probe reports TTFT and total without a log row",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('model-probe chat: verdict returned', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('model-probe chat: the provider answered', function () { pm.expect(body.ok, JSON.stringify(body)).to.eql(true); });",
+                  "pm.test('model-probe chat: the probe ran in the catalog mode', function () { pm.expect(body.mode, JSON.stringify(body)).to.eql('chat'); });",
+                  "pm.test('model-probe chat: it names the provider and model it tested', function () { pm.expect(body.provider).to.eql('openai'); pm.expect(body.model).to.eql('gpt-4o-mini'); });",
+                  "pm.test('model-probe chat: TTFT is measured and precedes the total', function () {",
+                  "  pm.expect(body.ttft_ms, JSON.stringify(body)).to.be.a('number').and.to.be.at.least(0);",
+                  "  pm.expect(body.total_ms, JSON.stringify(body)).to.be.a('number').and.to.be.at.least(body.ttft_ms);",
+                  "});",
+                  "var session = pm.collectionVariables.get('modelProbeSession');",
+                  "function check(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/sessions/' + encodeURIComponent(session) + '?limit=100', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) {",
+                  "      if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+                  "      pm.test('model-probe chat: session log read succeeded', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var body = res.json();",
+                  "    var logs = body.logs || [];",
+                  "    if (logs.length >= 1) { pm.test('model-probe chat: the probe wrote no log row to the session', function () { pm.expect(logs.length, JSON.stringify(body).slice(0, 300)).to.eql(1); }); return; }",
+                  "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+                  "    pm.test('model-probe chat: condition reached', function () { pm.expect.fail('session ' + session + ' never reached the expected log count; last body: ' + JSON.stringify(body).slice(0, 300)); });",
+                  "  });",
+                  "}",
+                  "check(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{modelProbeSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\",\"model\":\"gpt-4o-mini\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/models/test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "test"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai text-embedding-3-small model-probe: unary probe reports latency only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('model-probe embedding: verdict returned', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('model-probe embedding: the provider answered', function () { pm.expect(body.ok, JSON.stringify(body)).to.eql(true); });",
+                  "pm.test('model-probe embedding: it probed in the catalog mode', function () { pm.expect(body.mode, JSON.stringify(body)).to.eql('embedding'); });",
+                  "// A unary probe has no first token, so reporting a TTFT would be a measurement it never took.",
+                  "pm.test('model-probe embedding: no TTFT for a unary mode', function () { pm.expect(body.ttft_ms, JSON.stringify(body)).to.be.undefined; });",
+                  "pm.test('model-probe embedding: total latency is measured', function () { pm.expect(body.total_ms, JSON.stringify(body)).to.be.a('number').and.to.be.at.least(0); });",
+                  "var session = pm.collectionVariables.get('modelProbeSession');",
+                  "function check(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/sessions/' + encodeURIComponent(session) + '?limit=100', method: 'GET' }, function (err, res) {",
+                  "    if (err || res.code !== 200) {",
+                  "      if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+                  "      pm.test('model-probe embedding: session log read succeeded', function () { pm.expect.fail(err ? String(err) : res.code + ' ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var body = res.json();",
+                  "    var logs = body.logs || [];",
+                  "    if (logs.length >= 1) { pm.test('model-probe embedding: the probe wrote no second log row', function () { pm.expect(logs.length, JSON.stringify(body).slice(0, 300)).to.eql(1); }); return; }",
+                  "    if (attempt < 10) { setTimeout(function () { check(attempt + 1); }, 1000); return; }",
+                  "    pm.test('model-probe embedding: condition reached', function () { pm.expect.fail('session ' + session + ' never reached the expected log count; last body: ' + JSON.stringify(body).slice(0, 300)); });",
+                  "  });",
+                  "}",
+                  "check(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-session-id",
+                "value": "{{modelProbeSession}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\",\"model\":\"text-embedding-3-small\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/models/test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "test"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai model-probe: provider and model are required",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A blank model cannot be probed, so the call is a malformed request rather than a verdict.",
+                  "pm.test('model-probe blank model: the endpoint explains the refusal', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('provider and model are required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\",\"model\":\"   \"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/models/test",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "test"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
