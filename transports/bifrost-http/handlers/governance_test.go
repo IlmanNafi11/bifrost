@@ -5967,3 +5967,40 @@ func TestUpdateVirtualKeyListedModels(t *testing.T) {
 		assert.Equal(t, before.ListedModels, after.ListedModels)
 	})
 }
+
+// A listed_models block switched off in the UI is sent as null, which must clear the stored block.
+// Omitting the field still leaves it alone, and [] still means deny-every-model - so all three wire
+// forms have to stay apart through decoding and storage.
+func TestUpdateVirtualKeyListedModelsNullClears(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	seedListedModelsFixtures(t, store)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	createCtx := newTestRequestCtx(`{"name":"vk-clear","provider_configs":[{"provider":"openai","allowed_models":["gpt-5.4"]}],"listed_models":[{"provider":"openai","model":"gpt-5.4"}]}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	vkID := created.VirtualKey.ID
+
+	ctx := newTestRequestCtx(`{"listed_models":null}`)
+	ctx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	stored, err := store.GetVirtualKey(context.Background(), vkID)
+	require.NoError(t, err)
+	assert.Empty(t, stored.ListedModels, "null switches the block back off")
+
+	// The cleared key is not indistinguishable from deny-every-model in the response body either.
+	vkCtx := newTestRequestCtx(``)
+	vkCtx.SetUserValue("vk_id", vkID)
+	handler.getVirtualKey(vkCtx)
+	require.Equal(t, fasthttp.StatusOK, vkCtx.Response.StatusCode(), string(vkCtx.Response.Body()))
+	assert.NotContains(t, string(vkCtx.Response.Body()), `"listed_models"`, "an absent block must not render as an empty one")
+}

@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
+import { ListedModelsEditor } from "@/components/ui/listedModelsEditor";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { ProviderConfigsEditor } from "@/components/ui/providerConfigsEditor";
 import { HeadersTable } from "@/components/ui/headersTable";
@@ -55,7 +56,9 @@ import {
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
-import { validateListedModelsShape } from "@/lib/utils/listedModels";
+import { listedModelsFromVirtualKey, listedModelsPayload, validateListedModels, validateListedModelsShape } from "@/lib/utils/listedModels";
+import { listedModelsUpdate } from "./virtualKeySheet.utils";
+import { useGetRoutingRulesQuery } from "@/lib/store/apis/routingRulesApi";
 import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
 import { RelayGrantsEditor } from "@/components/relays/relayGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
@@ -422,6 +425,8 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 		rate_limit: _rateLimit,
 		calendar_aligned: _calendarAligned,
 		allow_all_providers: _allowAllProviders,
+		// The block is access governance too: a profile that supplies providers decides what the key sees.
+		listed_models: _listedModels,
 		// Only declared on UpdateVirtualKeyRequest, so it is dropped here rather than deleted off the
 		// rest object, which TypeScript treats as a required property once narrowed.
 		reset_budget_usage: _resetBudgetUsage,
@@ -521,6 +526,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	// RTK Query hooks. Skipped without the permission, which also keeps their error toasts quiet.
 	const { error: providersError } = useGetProvidersQuery(undefined, { skip: !hasProvidersAccess });
 	const { error: keysError } = useGetAllKeysQuery(undefined, { skip: !hasKeysAccess });
+	// The rules a listed_models entry may name; the editor offers only enabled, in-scope ones.
+	const { data: routingRulesData } = useGetRoutingRulesQuery(undefined, { skip: !hasProvidersAccess });
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
 	const [rotateVirtualKey, { isLoading: isRotating }] = useRotateVirtualKeyMutation();
@@ -652,6 +659,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
 			agentGrants: virtualKey?.agent_grants?.map((grant) => grant.agent_name) || [],
 			relayGrants: virtualKey?.relay_grants?.map((grant) => grant.relay_name) || [],
+			// Absent (feature off) and empty (deny every model) are distinct states, so this is mapped
+			// rather than defaulted to an empty array.
+			listedModels: listedModelsFromVirtualKey(virtualKey ?? {}),
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -1209,6 +1219,30 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			toast.error(t("virtualKeys.noPermission"));
 			return;
 		}
+		// The block names entities the schema cannot see (allowed_models per provider, rule scope), so
+		// it is checked here, against the same rules the server applies, before a round trip.
+		if (!isManagedByProfile && data.listedModels !== undefined) {
+			const listedError = validateListedModels(data.listedModels, {
+				providerConfigs: (data.providerConfigs ?? []).map((config) => ({
+					provider: config.provider,
+					allowed_models: config.allowed_models,
+					blacklisted_models: config.blacklisted_models,
+				})),
+				rules: routingRulesData?.rules ?? [],
+				scope: {
+					virtualKeyId: virtualKey?.id,
+					teamId: data.entityType === "team" ? data.teamId : undefined,
+					customerId: data.entityType === "customer" ? data.customerId : undefined,
+				},
+				allowAllProviders: data.allowAllProviders,
+			});
+			if (listedError) {
+				form.setError("listedModels", { type: "custom", message: listedError });
+				toast.error(listedError);
+				return;
+			}
+			form.clearErrors("listedModels");
+		}
 		try {
 			// Managed VKs only allow name + description updates; all other fields are owned by the access profile.
 			if (isManagedByProfile && virtualKey) {
@@ -1299,6 +1333,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					...expiryPayload,
 					...deleteAfterExpirePayload,
+					// Replaces the stored block as a whole once the switch is touched; omitted otherwise.
+					...(isManagedByProfile
+						? {}
+						: listedModelsUpdate({
+								touched: !!form.formState.dirtyFields.listedModels,
+								current: data.listedModels,
+								stored: virtualKey.listed_models,
+							})),
 				};
 
 				// Add budgets if enabled
@@ -1401,6 +1443,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// Omitted means inherit on create.
 					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
 					...(Object.keys(data.metadata).length > 0 ? { metadata: data.metadata } : {}),
+					// Absent on create leaves the feature off; an empty array denies every model.
+					...(data.listedModels !== undefined ? { listed_models: listedModelsPayload(data.listedModels) } : {}),
 				};
 
 				// Add budgets if enabled
@@ -1737,6 +1781,25 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											<RelayGrantsEditor
 												value={form.watch("relayGrants") ?? []}
 												onChange={(next) => form.setValue("relayGrants", next, { shouldDirty: true })}
+											/>
+
+											{/* The block deciding what this key sees in /v1/models and may call beyond allowed_models. */}
+											<ListedModelsEditor
+												value={form.watch("listedModels")}
+												onChange={(next) => form.setValue("listedModels", next, { shouldDirty: true })}
+												providerConfigs={providerConfigs.map((config) => ({
+													provider: config.provider,
+													allowed_models: config.allowed_models,
+													blacklisted_models: config.blacklisted_models,
+												}))}
+												rules={routingRulesData?.rules ?? []}
+												scope={{
+													virtualKeyId: virtualKey?.id,
+													teamId: form.watch("teamId"),
+													customerId: form.watch("customerId"),
+												}}
+												allowAllProviders={allowAllProviders}
+												errors={form.formState.errors.listedModels?.message ? [form.formState.errors.listedModels.message] : undefined}
 											/>
 											<DottedSeparator className="mt-6 mb-5" />
 											{/* Budget Configuration */}

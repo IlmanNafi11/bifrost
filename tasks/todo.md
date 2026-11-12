@@ -109,7 +109,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `ui/components/ui/listedModelsEditor.tsx` (baru) + test
   - Deps: T13 · Size: M
 
-- [ ] **T15 — Wire ke `virtualKeySheet.tsx`**
+- [x] **T15 — Wire ke `virtualKeySheet.tsx`**
   - Acceptance: blok tampil; submit kirim `listed_models`; nilai edit ter-load.
   - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`; `npm run typecheck`
   - Files: `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`

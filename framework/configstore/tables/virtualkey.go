@@ -299,6 +299,10 @@ type TableVirtualKey struct {
 	// ValidateVirtualKeyListedModels; nil (NULL) leaves the feature off, while an explicitly empty
 	// block ('[]') denies every model but the routing rules it names.
 	ListedModels []TableListedModelEntry `gorm:"type:text;serializer:json" json:"listed_models,omitempty"`
+	// ClearListedModels asks UpdateVirtualKey to write NULL to listed_models instead of keeping the
+	// stored block. nil alone cannot say this: it already means "the caller did not set the block",
+	// which the update keeps. The block switched off in the UI is this case.
+	ClearListedModels bool `gorm:"-" json:"-"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`

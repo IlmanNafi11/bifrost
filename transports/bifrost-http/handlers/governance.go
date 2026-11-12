@@ -490,8 +490,9 @@ type UpdateVirtualKeyRequest struct {
 	} `json:"agent_grants,omitempty"` // Omitted leaves grants unchanged; [] clears all grants
 	RelayGrants []relayGrantBody `json:"relay_grants,omitempty"` // Omitted leaves grants unchanged; [] clears them
 	// ListedModels replaces the key's block as a whole: omitted leaves the stored block unchanged,
-	// [] denies every model, and entries replace it. A pointer distinguishes the three.
-	ListedModels *[]listedModelBody `json:"listed_models,omitempty"`
+	// null switches the block off, [] denies every model, and entries replace it. All four wire
+	// forms are distinguishable, so the field is presence-aware rather than a plain slice.
+	ListedModels schemas.OptionalJSON[[]listedModelBody] `json:"listed_models,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -2876,7 +2877,8 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	// request that widens allowed_models and lists the newly allowed model in the same call is
 	// accepted, and one that narrows allowed_models below a listed model is refused.
 	var listedModels []configstoreTables.TableListedModelEntry
-	if req.ListedModels != nil {
+	if req.ListedModels.Set && !req.ListedModels.Null {
+		entries := req.ListedModels.Value
 		restrictions := make(map[string]listedModelsProviderRestriction, len(vk.ProviderConfigs))
 		for _, pc := range vk.ProviderConfigs {
 			restrictions[pc.Provider] = listedModelsProviderRestriction{allowed: pc.AllowedModels, blacklisted: pc.BlacklistedModels}
@@ -2891,12 +2893,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				restrictions[pc.Provider] = listedModelsProviderRestriction{allowed: pc.AllowedModels, blacklisted: pc.BlacklistedModels}
 			}
 		}
-		if len(*req.ListedModels) > 0 && len(restrictions) == 0 && !allowAll {
+		if len(entries) > 0 && len(restrictions) == 0 && !allowAll {
 			SendError(ctx, 400, "listed_models requires provider_configs or allow_all_providers: this virtual key configures no provider")
 			return
 		}
 		var err error
-		listedModels, err = h.validateListedModelsBody(ctx, *req.ListedModels, restrictions, allowAll, listedModelsScope{
+		listedModels, err = h.validateListedModelsBody(ctx, entries, restrictions, allowAll, listedModelsScope{
 			virtualKeyID: vk.ID,
 			teamID:       stringOrEmpty(vk.TeamID),
 			customerID:   stringOrEmpty(vk.CustomerID),
@@ -2962,8 +2964,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			vk.AllowAllProviders = *req.AllowAllProviders
 		}
 		applyVirtualKeyContentLoggingUpdate(vk, &req)
-		if req.ListedModels != nil {
+		if req.ListedModels.Set {
+			// An explicit null switches the block off (cleared below), while an empty array stores the
+			// deny-every-model form. nil alone would read as "leave the stored block alone".
 			vk.ListedModels = listedModels
+			vk.ClearListedModels = req.ListedModels.Null
 		}
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs

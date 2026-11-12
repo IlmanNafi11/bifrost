@@ -303,8 +303,9 @@ export interface UpdateVirtualKeyRequest {
 	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 	metadata?: Record<string, string>; // Replaces the metadata as a whole: {} clears it, omit to leave unchanged
 	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
-	// Replaces the block as a whole: [] clears it to deny-every-model, omit to leave it unchanged.
-	listed_models?: VirtualKeyListedModel[];
+	// Replaces the block as a whole: [] clears it to deny-every-model, null switches the feature off
+	// (it must be sent when the block is switched off, while omitting it leaves it unchanged).
+	listed_models?: VirtualKeyListedModel[] | null;
 }
 
 export interface BulkRotateVirtualKeysRequest {

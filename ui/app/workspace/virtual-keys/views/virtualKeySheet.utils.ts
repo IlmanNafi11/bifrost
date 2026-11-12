@@ -1,3 +1,5 @@
+import { type ListedModelsEntry, type ListedModelsWireEntry, listedModelsPayload } from "@/lib/utils/listedModels";
+
 // Virtual MCP assignments are staged locally in the sheet and reconciled against the key's
 // persisted set on Save via attach/detach calls.
 
@@ -97,4 +99,29 @@ export function resolveOwnerProfileState({
 	if (!canReadOwnerProfile) return { isGoverned: isServerFlaggedCurrentOwner, failed: false, unknown: false };
 	const failed = isError && errorStatus !== 404;
 	return { isGoverned: hasOwnerProfile, failed, unknown: isFetching || failed };
+}
+
+// listed_models is tri-state on the wire: omitted leaves the stored block alone, [] denies every
+// model, and entries replace it. Which one to send depends on the switch: while it is untouched the
+// block is the stored one and is not sent at all, and switching it off drops the field.
+
+/**
+ * The `listed_models` field for a create or update body, or nothing when the block is unchanged by
+ * this save. `current` is the form's block (undefined = switch off), `stored` the one the key had.
+ */
+export function listedModelsUpdate({
+	touched,
+	current,
+	stored,
+}: {
+	touched: boolean;
+	current: ListedModelsEntry[] | undefined;
+	stored: ListedModelsWireEntry[] | undefined | null;
+}): { listed_models?: ListedModelsWireEntry[] | null } {
+	if (!touched) return {};
+	if (current === undefined) {
+		// Off. A field that was never on needs no instruction; one that was on is cleared.
+		return stored ? { listed_models: null } : {};
+	}
+	return { listed_models: listedModelsPayload(current) };
 }

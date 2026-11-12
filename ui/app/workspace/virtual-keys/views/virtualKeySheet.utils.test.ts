@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	createDeleteAfterExpire,
 	diffVmcpAssignments,
+	listedModelsUpdate,
 	resolveOwnerProfileState,
 	updateDeleteAfterExpire,
 	vmcpAssignmentsDirty,
@@ -140,5 +141,31 @@ describe("resolveOwnerProfileState", () => {
 			failed: false,
 			unknown: false,
 		});
+	});
+});
+
+describe("listedModelsUpdate", () => {
+	const rows = [{ provider: "openai", model: "gpt-5.4", routing_rule: "" }];
+
+	it("sends nothing while the switch is untouched", () => {
+		expect(listedModelsUpdate({ touched: false, current: rows, stored: [{ provider: "openai", model: "gpt-4o" }] })).toEqual({});
+	});
+
+	it("sends the block as the edited list once touched", () => {
+		expect(listedModelsUpdate({ touched: true, current: rows, stored: undefined })).toEqual({
+			listed_models: [{ provider: "openai", model: "gpt-5.4" }],
+		});
+	});
+
+	it("sends an empty array for a block switched on and left empty, never null", () => {
+		expect(listedModelsUpdate({ touched: true, current: [], stored: undefined })).toEqual({ listed_models: [] });
+	});
+
+	it("drops the field to switch the block back off", () => {
+		expect(listedModelsUpdate({ touched: true, current: undefined, stored: rows })).toEqual({ listed_models: null });
+	});
+
+	it("sends nothing for a block switched off that was never on", () => {
+		expect(listedModelsUpdate({ touched: true, current: undefined, stored: undefined })).toEqual({});
 	});
 });
