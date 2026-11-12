@@ -94,7 +94,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: T4, T5. Files: `plugins/governance/store.go`, `permits_test.go`.
   - Scope: S (2).
 
-- [ ] **Task 7: `routingrulestore.go` — cache definisi rule**
+- [x] **Task 7: `routingrulestore.go` — cache definisi rule**
   - Description: `RoutingRuleStore` membaca `configstore.ConfigStore.GetRoutingRules` saat init, index by ID → `{Name, Targets, Fallbacks, Scope, ScopeID, Enabled}`; method `AllowsRequest(ctx, requestedRuleName, provider, model)` yang: resolve rule by **name** (listing/entry memakai nama call, D10), cek aktif + scope cocok (rantai VK→user→team→customer→global dari stamp context), cek model final `provider`/`model` ∈ definisi rule (target+fallback through `RoutingFallback.Resolved()`, fallback ke provider/model); method `Reload(id)`/`Remove(id)` untuk invalidation; fail closed saat rule hilang.
   - Acceptance: rule aktif+scope cocok+model ∈ definisi → allowed; rule nonaktif/scope lain/hapus → false; invalidation sebelum request berikutnya (test cache).
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run RoutingRuleStore`.

@@ -49,7 +49,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `plugins/governance/store.go`, `permits_test.go`
   - Deps: T4, T5 · Size: S
 
-- [ ] **T7 — `routingrulestore.go` cache definisi rule**
+- [x] **T7 — `routingrulestore.go` cache definisi rule**
   - Acceptance: aktif+scope cocok+model ∈ definisi → allowed; nonaktif/scope lain/hapus → false; invalidation fail-closed.
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run RoutingRuleStore`
   - Files: `plugins/governance/routingrulestore.go` (baru), `routingrulestore_test.go` (baru)
