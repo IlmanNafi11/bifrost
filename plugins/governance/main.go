@@ -1593,6 +1593,14 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, err, nil
 	}
 
+	// A model probe is a health check, not traffic: it is admitted like any other
+	// request (so access and key selection still say yes or no) but it bills no cost,
+	// token, request or rate-limit allowance and records no co-payers for a log row
+	// that will never be written.
+	if bifrost.IsModelProbe(ctx) {
+		return result, err, nil
+	}
+
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 

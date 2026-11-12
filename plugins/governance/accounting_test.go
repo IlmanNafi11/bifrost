@@ -871,3 +871,76 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
 	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
 }
+
+// TestAccounting_ProbeSpendsNothing pins the probe contract at the governance
+// layer: a probe passes admission (so a model the key may not use is still
+// refused) but charges no cost, token, request or rate-limit allowance, because a
+// health check must not move a budget the operator did not spend.
+func TestAccounting_ProbeSpendsNothing(t *testing.T) {
+	logger := NewMockLogger()
+	rl := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1_000_000, 0)
+	budget := buildBudgetWithUsage("budget1", 1_000_000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-probe", "Probe VK", budget)
+	vk.RateLimitID = &rl.ID
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	ctx := resolverCtx(store, "sk-bf-probe")
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, newChatRequest())
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit, "a probe is still admitted like any other request")
+
+	_, _, err = plugin.PostLLMHook(ctx, countableResponse(), nil)
+	require.NoError(t, err)
+	settleAccounting(t, plugin)
+
+	data := store.GetGovernanceData(context.Background())
+	assert.Zero(t, data.Budgets["budget1"].CurrentUsage, "a probe must not charge the budget")
+	assert.Zero(t, data.RateLimits["rl-vk"].TokenCurrentUsage, "a probe must not consume tokens")
+	assert.Zero(t, data.RateLimits["rl-vk"].RequestCurrentUsage, "a probe must not count as a request")
+	if ids, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string); ok {
+		assert.Empty(t, ids, "a probe records no co-payers for the log row it does not write")
+	}
+}
+
+// BenchmarkPostLLMHookAccounting records the cost of the probe check on the
+// common (non-probe) path of the accounting hook.
+func BenchmarkPostLLMHookAccounting(b *testing.B) {
+	logger := NewMockLogger()
+	rl := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1_000_000, 0)
+	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-bench", "Bench VK", rl)
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RateLimits:  []configstoreTables.TableRateLimit{*rl},
+	}, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = plugin.Cleanup() })
+	ctx := resolverCtx(store, "sk-bf-bench")
+	if _, _, err := plugin.PreLLMHook(ctx, newChatRequest()); err != nil {
+		b.Fatal(err)
+	}
+	resp := countableResponse()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := plugin.PostLLMHook(ctx, resp, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	plugin.wg.Wait()
+}
