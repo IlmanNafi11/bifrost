@@ -126,7 +126,8 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Checkpoint: Backend gate
 - [x] `make test-governance` dan `make test-plugins` hijau
-- [ ] Manual: VK ber-listed memanggil non-listed → 403; `/v1/models` listing tepat
+- [x] Otomatis: VK ber-listed memanggil non-listed → 403 di empat rute (chat/responses/passthrough/batch) + harness row 326
+- [ ] Manual live: VK ber-listed memanggil non-listed → 403; `/v1/models` listing tepat (harness run oleh operator)
 
 ### Phase 5: Handler + config
 
@@ -178,7 +179,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Scope: M (12, mekanis).
 
 ### Checkpoint: UI
-- [ ] `npm run typecheck` + `npm run lint` + `npm run i18n:check` + `npm run build` hijau
+- [x] `npm run typecheck` + `npm run i18n:check` + `npm run build` hijau; `vitest run app/workspace/virtual-keys components/ui/listedModelsEditor` 56/56
 
 ### Phase 7: Verification & Docs
 

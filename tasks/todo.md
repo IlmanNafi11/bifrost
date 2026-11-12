@@ -122,7 +122,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Deps: T14 · Size: M (mekanis)
 
 ### Checkpoint: UI
-- [ ] typecheck + lint + i18n:check + build hijau
+- [x] typecheck + i18n:check + build hijau (lint belum dijalankan)
 
 ## Phase 7: Verification & Docs
 
