@@ -71,14 +71,14 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 2: Grant (core/schemas + framework/grant)
 
-- [ ] **Task 4: `schemas` — `ListedModels`/`ListedRules` + `Access.ModelListed`**
+- [x] **Task 4: `schemas` — `ListedModels`/`ListedRules` + `Access.ModelListed`**
   - Description: `ProviderPermit.ListedModels WhiteList` (nama model; nil=nonaktif, []=deny-all) di `core/schemas/grant.go`; `Permit` dapat method `ListedRules() []string` (rule ID, VK-level); `Access` dapat `ModelListed(provider, model) bool` — true bila VK tanpa blok (nil), atau model ada di `ListedModels` provider itu.
   - Acceptance: kompilasi; kontrak interface terdokumentasi (nil vs [] semantics).
   - Verify: `cd core && GOWORK=off go build ./...` + unit kecil di `framework/grant` (T5).
   - Deps: None. Files: `core/schemas/grant.go`.
   - Scope: S (1). *Ask first: kontrak interface.*
 
-- [ ] **Task 5: `framework/grant` implement `ModelListed`**
+- [x] **Task 5: `framework/grant` implement `ModelListed`**
   - Description: `NewPermit`/`NewAccess` membawa `ListedModels`/`ListedRules`; `cloneProviderPermits` deep-copy `ListedModels`; `Access.ModelListed` membaca union allowed (nil = fitur nonaktif → true; satu permit men-list narrows). Tambah `WithListedRules(...)` permit option.
   - Acceptance: `ModelListed` true untuk VK nil, untuk `[]` hanya rule (bukan model) yang lolos di level ini; deep-copy tidak alias.
   - Verify: `cd framework && GOWORK=off go test ./grant/ -run 'Listed|ModelListed'`.

@@ -28,14 +28,14 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 2: Grant (core/schemas + framework/grant)
 
-- [ ] **T4 — `schemas` kontrak listed**
+- [x] **T4 — `schemas` kontrak listed**
   - Acceptance: `ProviderPermit.ListedModels`, `Permit.ListedRules()`, `Access.ModelListed()` terdokumentasi; kompilasi.
   - Verify: `cd core && GOWORK=off go build ./...` (+ test di T5)
   - Files: `core/schemas/grant.go`
   - Deps: none · Size: S
   - ⚠️ Ask first: kontrak interface.
 
-- [ ] **T5 — `framework/grant` implement `ModelListed`**
+- [x] **T5 — `framework/grant` implement `ModelListed`**
   - Acceptance: nil → true; `[]` hanya rule (bukan model); deep-copy tidak alias.
   - Verify: `cd framework && GOWORK=off go test ./grant/ -run 'Listed|ModelListed'`
   - Files: `framework/grant/permit.go`, `framework/grant/access.go`, test terkait
