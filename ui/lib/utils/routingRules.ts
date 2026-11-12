@@ -202,7 +202,12 @@ export function reorderFallbackRowsById<T>(rows: FallbackRows<T>, sourceId: stri
  * current rows (a row was added or removed mid-drag) is ignored rather than half-applied.
  */
 export function orderFallbackRowsByIds<T>(rows: FallbackRows<T>, ids: readonly string[]): FallbackRows<T> {
-	if (ids.length !== rows.ids.length) {
+	// The ids and the rows are written together, but the form value can be replaced on its own
+	// (`reset()`, the edit-load effect) between that write and the reconcile effect that re-tops the
+	// ids. Replaying onto a pair that has drifted maps a slot to no row, and a rendered row read for
+	// its provider then throws, taking the whole sheet down. A snapshot the current pair cannot
+	// describe is ignored, never half-applied.
+	if (ids.length !== rows.ids.length || rows.ids.length !== rows.fallbacks.length) {
 		return rows;
 	}
 	// A duplicate id would make the Map-based replay ambiguous (two slots mapping to one row and

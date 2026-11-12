@@ -358,6 +358,27 @@ describe("orderFallbackRowsByIds", () => {
 	it("ignores a snapshot naming a row that no longer exists", () => {
 		expect(orderFallbackRowsByIds(rows, ["id-a", "id-b", "id-gone"])).toBe(rows);
 	});
+
+	// The two arrays are written together, but a row is rendered from `fallbacks` and identified by
+	// `ids`: replaying onto a pair that has drifted would emit holes, and a rendered row object read
+	// for its provider then throws and takes the whole sheet down.
+	it("returns the input untouched when the ids no longer line up with the rows", () => {
+		const drifted = { fallbacks: ["b", "a"], ids: ["id-a", "id-b", "id-c"] };
+
+		expect(orderFallbackRowsByIds(drifted, ["id-a", "id-b", "id-c"])).toBe(drifted);
+		expect(orderFallbackRowsByIds({ fallbacks: ["b"], ids: ["id-b"] }, ["id-b"]).fallbacks).toEqual(["b"]);
+	});
+
+	it("never produces a hole when a row was added after the snapshot was captured", () => {
+		const current = { fallbacks: ["a", "b", "c"], ids: ["id-a", "id-b", "id-c"] };
+		const snapshot = ["id-a", "id-b", "id-c"];
+
+		for (const ids of [snapshot, ["id-b", "id-a", "id-c"], ["id-c", "id-b", "id-a"]]) {
+			const result = orderFallbackRowsByIds(current, ids);
+			expect(result.fallbacks.filter(Boolean)).toHaveLength(current.fallbacks.length);
+			expect(result.fallbacks).toHaveLength(result.ids.length);
+		}
+	});
 });
 
 describe("fallback row mutation sequence", () => {
