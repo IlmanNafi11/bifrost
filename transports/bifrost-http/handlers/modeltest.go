@@ -30,9 +30,12 @@ const (
 // whose catalog row names any other mode (container_create, live, an unknown
 // value) is refused rather than guessed at.
 var modelProbeModes = map[string]struct{}{
-	"chat":       {},
-	"responses":  {},
-	"completion": {},
+	"chat":             {},
+	"responses":        {},
+	"completion":       {},
+	"embedding":        {},
+	"rerank":           {},
+	"video_generation": {},
 }
 
 // modelTestPayload is the body of POST /api/models/test.
@@ -170,6 +173,12 @@ func (h *ProviderHandler) dispatchModelProbe(ctx *schemas.BifrostContext, provid
 		return h.probeResponses(ctx, provider, model, response, start)
 	case "completion":
 		return h.probeCompletion(ctx, provider, model, response, start)
+	case "embedding":
+		return h.probeEmbedding(ctx, provider, model)
+	case "rerank":
+		return h.probeRerank(ctx, provider, model)
+	case "video_generation":
+		return h.probeVideoGeneration(ctx, provider, model)
 	default:
 		return &schemas.BifrostError{Error: &schemas.ErrorField{Message: fmt.Sprintf("mode not supported for probe: %s", mode)}}
 	}
@@ -267,6 +276,45 @@ func (h *ProviderHandler) probeCompletion(ctx *schemas.BifrostContext, provider 
 		}
 		return false
 	}, response)
+}
+
+// probeEmbedding runs the unary embedding probe. A unary mode has no first token to
+// time, so only the total latency is reported.
+func (h *ProviderHandler) probeEmbedding(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	text := modelProbePrompt
+	_, bifrostErr := h.client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.EmbeddingInputItem{{
+			Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
+		}},
+	})
+	return bifrostErr
+}
+
+// probeRerank runs the unary rerank probe: one query against one document.
+func (h *ProviderHandler) probeRerank(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	topN := 1
+	_, bifrostErr := h.client.RerankRequest(ctx, &schemas.BifrostRerankRequest{
+		Provider:  provider,
+		Model:     model,
+		Query:     modelProbePrompt,
+		Documents: []schemas.RerankDocument{{Text: modelProbePrompt}},
+		Params:    &schemas.RerankParameters{TopN: &topN},
+	})
+	return bifrostErr
+}
+
+// probeVideoGeneration runs the unary video probe. It only creates the job: what
+// the mode answers is whether the provider accepted the work at all, and waiting
+// for a render inside a probe would measure the render, not the model.
+func (h *ProviderHandler) probeVideoGeneration(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	_, bifrostErr := h.client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    &schemas.VideoGenerationInput{Prompt: modelProbePrompt},
+	})
+	return bifrostErr
 }
 
 // drainProbeStream reads a probe stream to its end, recording TTFT at the first

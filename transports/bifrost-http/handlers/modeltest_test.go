@@ -98,16 +98,25 @@ func probeCatalog(tb testing.TB, rows map[string]string) *modelcatalog.ModelCata
 // markers every hook saw.
 func newProbeHandler(tb testing.TB, upstreamURL string, catalog *modelcatalog.ModelCatalog) (*ProviderHandler, *probeObserved) {
 	tb.Helper()
+	return newProbeHandlerWithProvider(tb, schemas.OpenAI, upstreamURL, catalog, nil)
+}
+
+// newProbeHandlerWithProvider is newProbeHandler with the provider name and custom
+// provider config under test, for modes a built-in provider only serves through a
+// custom (OpenAI-compatible) configuration.
+func newProbeHandlerWithProvider(tb testing.TB, providerName schemas.ModelProvider, upstreamURL string, catalog *modelcatalog.ModelCatalog, custom *schemas.CustomProviderConfig) (*ProviderHandler, *probeObserved) {
+	tb.Helper()
 	log := bifrost.NewNoOpLogger()
 	SetLogger(log)
 	config := &lib.Config{
 		ClientConfig: &configstore.ClientConfig{},
 		ModelCatalog: catalog,
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {
+			providerName: {
 				Keys:                     []schemas.Key{{ID: "key-openai", Name: "prod-2", Value: *schemas.NewSecretVar("sk-openai"), Weight: 1, Models: schemas.WhiteList{"*"}}},
 				NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstreamURL, AllowPrivateNetwork: true},
 				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 10},
+				CustomProviderConfig:     custom,
 			},
 		},
 	}
@@ -428,4 +437,97 @@ func TestModelProbeModeDispatch_UnrecognizedModeIsRejected(t *testing.T) {
 	h.testModel(ctx)
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	assert.Contains(t, string(ctx.Response.Body()), "mode not supported for probe: live")
+}
+
+// unaryUpstreams serves the unary endpoints each probe mode exercises and records
+// which one was called.
+func unaryUpstreams(tb testing.TB) (*httptest.Server, *atomic.Int32, *atomic.Int32) {
+	tb.Helper()
+	embeddings, reranks := &atomic.Int32{}, &atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			embeddings.Add(1)
+			fmt.Fprint(w, `{"object":"list","model":"text-embedding-3-small","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`)
+		case "/v1/rerank":
+			reranks.Add(1)
+			fmt.Fprint(w, `{"id":"rr1","model":"rerank-1","results":[{"index":0,"relevance_score":0.9}]}`)
+		default:
+			tb.Errorf("unexpected upstream path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	tb.Cleanup(server.Close)
+	return server, embeddings, reranks
+}
+
+func TestModelProbeModeDispatch_UnaryModesReportLatencyOnly(t *testing.T) {
+	upstream, embeddings, reranks := unaryUpstreams(t)
+	cases := []struct {
+		mode  string
+		model string
+		hit   *atomic.Int32
+	}{
+		{"embedding", "text-embedding-3-small", embeddings},
+		{"rerank", "rerank-1", reranks},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode, func(t *testing.T) {
+			catalog := probeCatalog(t, map[string]string{"openai/" + tc.model: tc.mode})
+			// Embedding and rerank on an OpenAI-backed upstream exist only as a
+			// custom (OpenAI-compatible) configuration, exactly as an operator adds one.
+			h, _ := newProbeHandlerWithProvider(t, schemas.OpenAI, upstream.URL, catalog,
+				&schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: &schemas.AllowedRequests{Embedding: true, Rerank: true}})
+
+			ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: tc.model})
+			h.testModel(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+			response := decodeProbe(t, ctx)
+			require.True(t, response.OK, "%s: %s", tc.mode, response.Error)
+			assert.Equal(t, tc.mode, response.Mode)
+			assert.Nil(t, response.TTFTMs, "%s is a unary mode and must never report TTFT", tc.mode)
+			assert.GreaterOrEqual(t, response.TotalMs, int64(0))
+			assert.Equal(t, int32(1), tc.hit.Load(), "the probe must reach the %s endpoint exactly once", tc.mode)
+		})
+	}
+}
+
+// videoUpstreams serves the video job-creation endpoint.
+func videoUpstreams(tb testing.TB) (*httptest.Server, *atomic.Int32) {
+	tb.Helper()
+	jobs := &atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/videos" {
+			jobs.Add(1)
+			fmt.Fprint(w, `{"id":"video_1","object":"video","status":"queued","model":"sora-2","prompt":"hi"}`)
+			return
+		}
+		tb.Errorf("unexpected upstream path %q", r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	tb.Cleanup(server.Close)
+	return server, jobs
+}
+
+// The remaining unary modes create a job or answer in one call; the probe reports
+// that the provider accepted the work, which is what "the model is reachable"
+// means for them.
+func TestModelProbeModeDispatch_JobCreatingUnaryModeReportsLatencyOnly(t *testing.T) {
+	upstream, jobs := videoUpstreams(t)
+	catalog := probeCatalog(t, map[string]string{"openai/sora-2": "video_generation"})
+	h, _ := newProbeHandlerWithProvider(t, schemas.OpenAI, upstream.URL, catalog,
+		&schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, AllowedRequests: &schemas.AllowedRequests{VideoGeneration: true}})
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "sora-2"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	response := decodeProbe(t, ctx)
+	require.True(t, response.OK, response.Error)
+	assert.Equal(t, "video_generation", response.Mode)
+	assert.Nil(t, response.TTFTMs, "video_generation is unary and must not report TTFT")
+	assert.Equal(t, int32(1), jobs.Load(), "the probe must create exactly one job")
 }
