@@ -182,7 +182,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 7: Verification & Docs
 
-- [ ] **Task 17: Harness case (`listed models`)**
+- [x] **Task 17: Harness case (`listed models`)**
   - Description: case di `provider-harness.json` — `/v1/models` dengan VK ber-`listed_models` mengembalikan persis entri (D10), panggilan model non-listed → 403, `coding` → rule jalan. Insersi surgical (splice).
   - Acceptance: augment + filter lulus; case red pre-change, green post (validasi struktural).
   - Verify: `node tests/e2e/api/runners/augment-provider-harness.mjs ...` lalu `filter-collection.mjs --feature "listed models"`.

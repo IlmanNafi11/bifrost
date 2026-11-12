@@ -126,7 +126,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 7: Verification & Docs
 
-- [ ] **T17 — Harness case (`listed models`)**
+- [x] **T17 — Harness case (`listed models`)**
   - Acceptance: augment + filter lulus; case red pre-change, green post.
   - Verify: `filter-collection.mjs --feature "listed models"`
   - Files: `tests/e2e/api/collections/provider-harness.json`, `tmp/`
