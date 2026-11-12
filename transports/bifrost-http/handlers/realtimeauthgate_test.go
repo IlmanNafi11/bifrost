@@ -175,6 +175,7 @@ func (usableTestPermit) MCPPermits() []schemas.MCPPermit           { return nil 
 func (usableTestPermit) AgentPermits() []string                    { return nil }
 func (usableTestPermit) AllowsAllProviders() bool                  { return true }
 func (usableTestPermit) RelayPermits() []string                    { return nil }
+func (usableTestPermit) ListedRules() []string                     { return nil }
 
 // newResolvedVirtualKeyContext is a context whose presented virtual key resolved to usable
 // access, mirroring what the per-request pipeline leaves behind for a real key.

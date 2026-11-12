@@ -245,7 +245,7 @@ func TestVirtualKeyListedModelsRoundTrip(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(&TableVirtualKey{}))
 
 	modelEntry := TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
-	ruleEntry := TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	ruleEntry := TableListedModelEntry{RoutingRule: "coding"}
 
 	t.Run("absent block stays nil", func(t *testing.T) {
 		vk := TableVirtualKey{ID: "lm-nil", Name: "lm-nil", Value: *schemas.NewSecretVar("sk-bf-lm-nil")}
@@ -292,22 +292,23 @@ func TestVirtualKeyListedModelsRoundTrip(t *testing.T) {
 }
 
 // TestTableListedModelEntryJSON pins the wire shape of one entry: a model entry is
-// {"provider","model"}, a rule entry is {"routing_rule_id"} for persistence plus the config-file
-// spelling {"routing_rule"} for the name a config.json author writes before it is resolved to an id.
-// The transient name must never be persisted next to the id it was resolved into.
+// {"provider","model"} and a rule entry is {"routing_rule":"coding"}. The name is the rule's whole
+// identity - what the caller asks for and what /v1/models shows - so it is what is stored and
+// emitted, with no id form to keep in step with it.
 func TestTableListedModelEntryJSON(t *testing.T) {
-	t.Run("config file spells the rule as routing_rule", func(t *testing.T) {
+	t.Run("a rule entry reads back by name", func(t *testing.T) {
 		var entry TableListedModelEntry
 		require.NoError(t, json.Unmarshal([]byte(`{"routing_rule":"coding"}`), &entry))
-		assert.Equal(t, "coding", entry.RoutingRuleName)
-		assert.Empty(t, entry.RoutingRuleID)
+		assert.Equal(t, "coding", entry.RoutingRule)
+		assert.True(t, entry.IsRule())
+		assert.False(t, entry.IsModel())
 	})
 
-	t.Run("stored form carries the rule id only", func(t *testing.T) {
-		entry := TableListedModelEntry{RoutingRuleID: "rule-coding", RoutingRuleName: "coding"}
+	t.Run("a rule entry is emitted by name", func(t *testing.T) {
+		entry := TableListedModelEntry{RoutingRule: "coding"}
 		raw, err := json.Marshal(entry)
 		require.NoError(t, err)
-		assert.JSONEq(t, `{"routing_rule_id":"rule-coding"}`, string(raw))
+		assert.JSONEq(t, `{"routing_rule":"coding"}`, string(raw))
 	})
 
 	t.Run("model entry", func(t *testing.T) {
@@ -340,15 +341,15 @@ func TestValidateVirtualKeyListedModels(t *testing.T) {
 		{name: "nil", entries: nil},
 		{name: "empty", entries: []TableListedModelEntry{}},
 		{name: "model entry", entries: []TableListedModelEntry{model("openai", "gpt-5.4")}},
-		{name: "rule entry", entries: []TableListedModelEntry{{RoutingRuleID: "rule-coding"}}},
-		{name: "unresolved rule name", entries: []TableListedModelEntry{{RoutingRuleName: "coding"}}},
-		{name: "mixed", entries: []TableListedModelEntry{model("openai", "gpt-5.4"), {RoutingRuleID: "rule-coding"}}},
+		{name: "rule entry", entries: []TableListedModelEntry{{RoutingRule: "coding"}}},
+		{name: "rule spelled with a provider prefix", entries: []TableListedModelEntry{{RoutingRule: "openai/coding"}}, wantErr: "listed by name"},
+		{name: "mixed", entries: []TableListedModelEntry{model("openai", "gpt-5.4"), {RoutingRule: "coding"}}},
 		{name: "entries at limit", entries: atLimit},
 		{name: "too many entries", entries: tooMany, wantErr: "at most 100 entries"},
 		{name: "neither model nor rule", entries: []TableListedModelEntry{{}}, wantErr: "must name a model or a routing rule"},
 		{name: "provider without model", entries: []TableListedModelEntry{{Provider: "openai"}}, wantErr: "must name a model or a routing rule"},
 		{name: "model without provider", entries: []TableListedModelEntry{{Model: "gpt-5.4"}}, wantErr: "must name a model or a routing rule"},
-		{name: "both model and rule", entries: []TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4", RoutingRuleID: "rule-coding"}}, wantErr: "cannot be both"},
+		{name: "both model and rule", entries: []TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4", RoutingRule: "coding"}}, wantErr: "cannot be both"},
 		{name: "wildcard model", entries: []TableListedModelEntry{model("openai", "*")}, wantErr: `cannot be a wildcard`},
 		{name: "wildcard provider", entries: []TableListedModelEntry{model("*", "gpt-5.4")}, wantErr: `cannot be a wildcard`},
 	}
@@ -393,25 +394,24 @@ func TestNormalizeVirtualKeyListedModels(t *testing.T) {
 
 	t.Run("order is deterministic", func(t *testing.T) {
 		entries := []TableListedModelEntry{
-			{RoutingRuleID: "rule-b"},
+			{RoutingRule: "b-coding"},
 			{Provider: "openai", Model: "gpt-5.4"},
-			{RoutingRuleID: "rule-a"},
+			{RoutingRule: "a-coding"},
 			{Provider: "anthropic", Model: "claude-sonnet-5"},
 		}
 		normalizeVirtualKeyListedModels(&entries)
 		assert.Equal(t, []TableListedModelEntry{
 			{Provider: "anthropic", Model: "claude-sonnet-5"},
 			{Provider: "openai", Model: "gpt-5.4"},
-			{RoutingRuleID: "rule-a"},
-			{RoutingRuleID: "rule-b"},
+			{RoutingRule: "a-coding"},
+			{RoutingRule: "b-coding"},
 		}, entries)
 	})
 
-	t.Run("a config-file rule name is dropped before persist", func(t *testing.T) {
-		// The name only exists between config load and name→id resolution; persisting it would leave a
-		// stale name beside the id it was resolved into.
-		entries := []TableListedModelEntry{{RoutingRuleID: "rule-coding", RoutingRuleName: "coding"}}
+	t.Run("a rule entry is stored by name unchanged", func(t *testing.T) {
+		entries := []TableListedModelEntry{{RoutingRule: " coding "}}
 		normalizeVirtualKeyListedModels(&entries)
-		assert.Empty(t, entries[0].RoutingRuleName)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "coding", entries[0].RoutingRule)
 	})
 }

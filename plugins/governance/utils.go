@@ -156,11 +156,10 @@ func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, ac
 		return filtered
 	}
 
-	// The listing is authoritative: keep only what it names, in the order the listing produced.
-	listedSet := make(map[string]struct{}, len(listed))
-	for _, entry := range listed {
-		listedSet[entry.ModelID()] = struct{}{}
-	}
+	// The listing is authoritative: keep only what it names, in the order the block lists it. A model
+	// the block names but the provider listing does not have is simply absent - the block says what
+	// may be shown, the provider says what exists.
+
 	byID := make(map[string]schemas.Model, len(filtered))
 	for _, model := range filtered {
 		byID[model.ID] = model
@@ -171,7 +170,8 @@ func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, ac
 			out = append(out, model)
 		}
 	}
-	// A rule's name is not a catalog model, so it is added here rather than looked up.
+	// A rule's name is not a catalog model, so it is added here rather than looked up. Its targets
+	// stay hidden: the caller asks for the rule, and the models behind it are not its to know.
 	if rules := p.store.RoutingRules(); rules != nil {
 		for _, name := range rules.ListedRuleNames(ctx, access.ListedRules()) {
 			out = append(out, schemas.Model{ID: name})
@@ -404,17 +404,17 @@ func listedModelsForProvider(entries []configstoreTables.TableListedModelEntry, 
 	return models
 }
 
-// listedRuleIDs returns the routing rule IDs a key's listed_models block names, or nil when it names
-// none. Only resolved IDs are carried: an entry still holding a name has not been through the
-// config load's name→ID resolution, and a name is not something the routing layer can be asked about.
-func listedRuleIDs(entries []configstoreTables.TableListedModelEntry) []string {
-	var ruleIDs []string
+// listedRuleNames returns the routing rule names a key's listed_models block names, or nil when it
+// names none. The name is the entry's identity: the routing cache resolves it to a rule definition
+// at request time, and a name no rule answers to is simply not callable.
+func listedRuleNames(entries []configstoreTables.TableListedModelEntry) []string {
+	var ruleNames []string
 	for _, entry := range entries {
-		if entry.RoutingRuleID != "" {
-			ruleIDs = append(ruleIDs, entry.RoutingRuleID)
+		if entry.RoutingRule != "" {
+			ruleNames = append(ruleNames, entry.RoutingRule)
 		}
 	}
-	return ruleIDs
+	return ruleNames
 }
 
 // isLiveSessionContinuation reports a billing unit of an admitted live session: the continuation

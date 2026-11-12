@@ -51,7 +51,7 @@ func TestGenerateVirtualKeyHashCoversListedModels(t *testing.T) {
 
 	gpt := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
 	other := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.5"}
-	rule := tables.TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	rule := tables.TableListedModelEntry{RoutingRule: "coding"}
 	with := func(entries ...tables.TableListedModelEntry) string {
 		vk := base
 		vk.ListedModels = entries

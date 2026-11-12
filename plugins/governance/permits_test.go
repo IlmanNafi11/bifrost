@@ -1734,7 +1734,7 @@ func TestPermitForVirtualKey_ListedModels(t *testing.T) {
 	vk.ListedModels = []configstoreTables.TableListedModelEntry{
 		{Provider: "openai", Model: "gpt-5.4"},
 		{Provider: "anthropic", Model: "claude-sonnet-5"},
-		{RoutingRuleID: "rule-coding"},
+		{RoutingRule: "coding"},
 		{Provider: "bedrock", Model: "not-configured"},
 	}
 
@@ -1747,14 +1747,14 @@ func TestPermitForVirtualKey_ListedModels(t *testing.T) {
 	}
 	assert.Equal(t, schemas.WhiteList{"gpt-5.4"}, byProvider["openai"])
 	assert.Equal(t, schemas.WhiteList{"claude-sonnet-5"}, byProvider["anthropic"])
-	assert.Equal(t, []string{"rule-coding"}, permit.ListedRules())
+	assert.Equal(t, []string{"coding"}, permit.ListedRules(), "a listed rule is carried and called by name, which is what /v1/models shows")
 
 	// A deny-all block is not an absent one.
 	denyAll := buildVirtualKey("vk-deny", "sk-bf-deny", "Deny Key", true)
 	denyAll.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
 	}
-	denyAll.ListedModels = []configstoreTables.TableListedModelEntry{{RoutingRuleID: "rule-coding"}}
+	denyAll.ListedModels = []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}}
 	denied := vkPermit(denyAll, nil)
 	require.Len(t, denied.ProviderPermits(), 1)
 	require.NotNil(t, denied.ProviderPermits()[0].ListedModels, "a listing of rules only still forbids every model")
@@ -1782,9 +1782,9 @@ func TestFilterModelsForAccess_ListedModels(t *testing.T) {
 	}
 	vk.ListedModels = []configstoreTables.TableListedModelEntry{
 		{Provider: "openai", Model: "gpt-5.4"},
-		{RoutingRuleID: "rule-coding"},
-		{RoutingRuleID: "rule-off"},
-		{RoutingRuleID: "rule-gone"},
+		{RoutingRule: "coding"},
+		{RoutingRule: "retired"},
+		{RoutingRule: "deleted-long-ago"},
 	}
 	logger := NewMockLogger()
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{

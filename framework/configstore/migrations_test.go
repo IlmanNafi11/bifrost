@@ -4749,7 +4749,7 @@ func TestMigrationAddVirtualKeyListedModelsColumn(t *testing.T) {
 		ID: "vk-lm-mig-listed", Name: "vk-lm-mig-listed", Value: *schemas.NewSecretVar("sk-bf-vk-lm-mig-listed"),
 		ListedModels: []tables.TableListedModelEntry{
 			{Provider: "openai", Model: "gpt-5.4"},
-			{RoutingRuleID: "rule-coding"},
+			{RoutingRule: "coding"},
 		},
 	}
 	for _, vk := range []*tables.TableVirtualKey{&off, &denyAll, &listed} {

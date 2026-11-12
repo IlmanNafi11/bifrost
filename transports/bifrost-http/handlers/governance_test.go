@@ -5773,3 +5773,197 @@ func TestVirtualKeyMCPConfigCallerErrorsAre400(t *testing.T) {
 	assert.Equal(t, a.MCPConfigs[0].ID, unchanged.MCPConfigs[0].ID)
 	assert.Equal(t, []string{"echo"}, []string(unchanged.MCPConfigs[0].ToolsToExecute))
 }
+
+// seedListedModelsFixtures registers the providers and routing rules the listed_models tests need.
+// A listing entry is validated against both, so both have to exist before a create is exercised.
+func seedListedModelsFixtures(t *testing.T, store configstore.ConfigStore) (globalRule configstoreTables.TableRoutingRule, teamRule configstoreTables.TableRoutingRule) {
+	t.Helper()
+	ctx := context.Background()
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.DeepSeek} {
+		require.NoError(t, store.AddProvider(ctx, provider, configstore.ProviderConfig{
+			NetworkConfig: schemas.Ptr(schemas.NetworkConfig{BaseURL: "https://example.invalid", MaxRetries: 1}),
+			Keys:          []schemas.Key{},
+		}))
+	}
+	globalRule = configstoreTables.TableRoutingRule{
+		ID: "rule-coding", Name: "coding", Scope: "global", Enabled: schemas.Ptr(true),
+		CelExpression: "true",
+	}
+	require.NoError(t, store.CreateRoutingRule(ctx, &globalRule))
+	teamRule = configstoreTables.TableRoutingRule{
+		ID: "rule-team", Name: "team-fast", Scope: "team", ScopeID: schemas.Ptr("team-1"), Enabled: schemas.Ptr(true),
+		CelExpression: "true",
+	}
+	require.NoError(t, store.CreateRoutingRule(ctx, &teamRule))
+	return globalRule, teamRule
+}
+
+// A key's listed_models block is a statement about what the key may call on top of allowed_models,
+// so an entry naming a model the layer below refuses, a provider the key does not configure, or a
+// rule that does not exist, is not enabled, or is scoped elsewhere is refused rather than stored.
+func TestCreateVirtualKeyListedModelsValidation(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	require.NoError(t, store.CreateTeam(context.Background(), &configstoreTables.TableTeam{ID: "team-1", Name: "Team 1"}))
+	seedListedModelsFixtures(t, store)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	create := func(body string) *fasthttp.RequestCtx {
+		ctx := newTestRequestCtx(body)
+		handler.createVirtualKey(ctx)
+		return ctx
+	}
+
+	t.Run("a model entry inside allowed_models and a scoped rule are accepted", func(t *testing.T) {
+		ctx := create(`{"name":"vk-listed-ok","provider_configs":[{"provider":"openai","allowed_models":["gpt-5.4"]},{"provider":"deepseek","allowed_models":["*"]}],"team_id":"team-1","listed_models":[{"provider":"openai","model":"gpt-5.4"},{"routing_rule":"coding"},{"routing_rule":"team-fast"}]}`)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var created struct {
+			VirtualKey struct {
+				ID string `json:"id"`
+			} `json:"virtual_key"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &created))
+		stored, err := store.GetVirtualKey(context.Background(), created.VirtualKey.ID)
+		require.NoError(t, err)
+		require.Equal(t, []configstoreTables.TableListedModelEntry{
+			{Provider: "openai", Model: "gpt-5.4"},
+			{RoutingRule: "coding"},
+			{RoutingRule: "team-fast"},
+		}, stored.ListedModels, "the block is stored exactly as validated")
+	})
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "a model outside allowed_models",
+			body: `{"name":"vk-a","provider_configs":[{"provider":"openai","allowed_models":["gpt-5.4"]}],"listed_models":[{"provider":"openai","model":"gpt-4o"}]}`,
+			want: "allowed_models of provider openai does not allow",
+		},
+		{
+			name: "a blacklisted model",
+			body: `{"name":"vk-b","provider_configs":[{"provider":"openai","allowed_models":["*"],"blacklisted_models":["gpt-4o"]}],"listed_models":[{"provider":"openai","model":"gpt-4o"}]}`,
+			want: "blacklisted_models of provider openai blocks",
+		},
+		{
+			name: "a provider the key does not configure",
+			body: `{"name":"vk-c","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"provider":"deepseek","model":"deepseek-v4"}]}`,
+			want: "which this virtual key does not configure",
+		},
+		{
+			name: "an unknown routing rule",
+			body: `{"name":"vk-d","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"routing_rule":"nope"}]}`,
+			want: "which does not exist",
+		},
+		{
+			name: "a rule scoped to another team",
+			body: `{"name":"vk-e","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"routing_rule":"team-fast"}]}`,
+			want: "not scoped to this virtual key",
+		},
+		{
+			name: "an entry naming both forms",
+			body: `{"name":"vk-f","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"provider":"openai","model":"gpt-5.4","routing_rule":"coding"}]}`,
+			want: "cannot be both a model and a routing rule",
+		},
+		{
+			name: "a repeated model entry",
+			body: `{"name":"vk-g","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"provider":"openai","model":"gpt-5.4"},{"provider":"openai","model":"gpt-5.4"}]}`,
+			want: "repeats openai/gpt-5.4",
+		},
+		{
+			name: "a wildcard entry",
+			body: `{"name":"vk-h","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"provider":"openai","model":"*"}]}`,
+			want: "cannot be a wildcard",
+		},
+		{
+			name: "a listed model on a key that configures no provider",
+			body: `{"name":"vk-i","listed_models":[{"provider":"openai","model":"gpt-5.4"}]}`,
+			want: "configures no provider",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := create(tc.body)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.want)
+		})
+	}
+
+	t.Run("the block survives as an empty list rather than falling back to the feature being off", func(t *testing.T) {
+		ctx := create(`{"name":"vk-listed-empty","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[]}`)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var created struct {
+			VirtualKey struct {
+				ID string `json:"id"`
+			} `json:"virtual_key"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &created))
+		stored, err := store.GetVirtualKey(context.Background(), created.VirtualKey.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.ListedModels, "an explicit empty block denies every model and must not be stored as absent")
+		require.Len(t, stored.ListedModels, 0)
+	})
+}
+
+// An update replaces the block as a whole, and omitting it leaves the stored one alone. Both are
+// distinguished on the wire by the field's presence, so both are pinned here.
+func TestUpdateVirtualKeyListedModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	seedListedModelsFixtures(t, store)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	createCtx := newTestRequestCtx(`{"name":"vk-update","provider_configs":[{"provider":"openai","allowed_models":["gpt-5.4"]}],"listed_models":[{"provider":"openai","model":"gpt-5.4"}]}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	vkID := created.VirtualKey.ID
+
+	update := func(body string) *fasthttp.RequestCtx {
+		ctx := newTestRequestCtx(body)
+		ctx.SetUserValue("vk_id", vkID)
+		handler.updateVirtualKey(ctx)
+		return ctx
+	}
+
+	t.Run("omitting the block leaves it unchanged", func(t *testing.T) {
+		ctx := update(`{"description":"touched"}`)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetVirtualKey(context.Background(), vkID)
+		require.NoError(t, err)
+		assert.Equal(t, []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, stored.ListedModels)
+	})
+
+	t.Run("a rule entry replaces it", func(t *testing.T) {
+		ctx := update(`{"listed_models":[{"routing_rule":"coding"}]}`)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetVirtualKey(context.Background(), vkID)
+		require.NoError(t, err)
+		assert.Equal(t, []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}}, stored.ListedModels)
+	})
+
+	t.Run("an empty block denies every model rather than clearing the feature", func(t *testing.T) {
+		ctx := update(`{"listed_models":[]}`)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		stored, err := store.GetVirtualKey(context.Background(), vkID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.ListedModels)
+		assert.Len(t, stored.ListedModels, 0)
+	})
+
+	t.Run("a refused entry changes nothing", func(t *testing.T) {
+		before, err := store.GetVirtualKey(context.Background(), vkID)
+		require.NoError(t, err)
+		ctx := update(`{"listed_models":[{"provider":"openai","model":"gpt-4o"}]}`)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		after, err := store.GetVirtualKey(context.Background(), vkID)
+		require.NoError(t, err)
+		assert.Equal(t, before.ListedModels, after.ListedModels)
+	})
+}

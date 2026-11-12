@@ -1611,8 +1611,8 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders),
 		grant.WithRelayPermits(endpointPermits),
 	}
-	if ruleIDs := listedRuleIDs(vk.ListedModels); ruleIDs != nil {
-		options = append(options, grant.WithListedRules(ruleIDs))
+	if ruleNames := listedRuleNames(vk.ListedModels); ruleNames != nil {
+		options = append(options, grant.WithListedRules(ruleNames))
 	}
 	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits,
 		options...)

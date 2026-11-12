@@ -1778,7 +1778,7 @@ func TestVirtualKeyListedModels_PersistsThroughCreateAndUpdate(t *testing.T) {
 	ctx := context.Background()
 
 	gpt := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
-	rule := tables.TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	rule := tables.TableListedModelEntry{RoutingRule: "coding"}
 	vk := &tables.TableVirtualKey{
 		ID: "vk-listed", Name: "Listed", Value: *schemas.NewSecretVar("vk-listed-value"),
 		ListedModels: []tables.TableListedModelEntry{gpt},

@@ -1,7 +1,6 @@
 package tables
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,53 +13,30 @@ const (
 )
 
 // TableListedModelEntry is one entry of a virtual key's listed_models block. An entry names either
-// a model on a specific provider (Provider + Model) or a routing rule (RoutingRuleID), never both.
-// The rule is stored and emitted by id, because a rename must not silently change what a key may
-// call; the name a config.json author writes is the config-only RoutingRuleName.
+// a model on a specific provider (Provider + Model) or a routing rule (RoutingRule), never both.
+//
+// The rule is stored by name rather than by id. A listed rule is called by its name and is shown by
+// its name in /v1/models, so name is the entry's whole identity: a rename is visible to the key that
+// listed it, and a rule that no longer exists simply stops matching anything. Storing an id here
+// would need a name to be resolved on every read and would silently follow a rename.
 type TableListedModelEntry struct {
-	Provider      string `json:"provider,omitempty"`
-	Model         string `json:"model,omitempty"`
-	RoutingRuleID string `json:"routing_rule_id,omitempty"`
-	// RoutingRuleName is the name a config.json author writes. It exists only between config load
-	// and name→id resolution and is never serialized, so a resolved entry cannot carry a stale name.
-	RoutingRuleName string `json:"-"`
-}
-
-// UnmarshalJSON accepts a routing rule spelled as a name ("routing_rule", the config-file form)
-// alongside the stored id form ("routing_rule_id"). The reverse mapping is deliberately not
-// symmetric: an entry always marshals as its id.
-func (e *TableListedModelEntry) UnmarshalJSON(data []byte) error {
-	type alias TableListedModelEntry
-	aux := struct {
-		alias
-		RoutingRule string `json:"routing_rule"`
-	}{}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	*e = TableListedModelEntry(aux.alias)
-	e.RoutingRuleName = aux.RoutingRule
-	return nil
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// RoutingRule is the name of a routing rule the key may call, and the model the listing shows.
+	RoutingRule string `json:"routing_rule,omitempty"`
 }
 
 // IsModel reports whether the entry names a provider model rather than a routing rule.
 func (e TableListedModelEntry) IsModel() bool { return e.Model != "" }
 
 // IsRule reports whether the entry names a routing rule.
-func (e TableListedModelEntry) IsRule() bool { return e.RoutingRuleID != "" || e.RoutingRuleName != "" }
+func (e TableListedModelEntry) IsRule() bool { return e.RoutingRule != "" }
 
-// RuleRef returns the entry's routing rule as the id when resolved, else the configured name.
-// Callers that need a definitive id must have resolved the name first.
-func (e TableListedModelEntry) RuleRef() string {
-	if e.RoutingRuleID != "" {
-		return e.RoutingRuleID
-	}
-	return e.RoutingRuleName
-}
+// RuleRef returns the entry's routing rule name, or "" for a model entry.
+func (e TableListedModelEntry) RuleRef() string { return e.RoutingRule }
 
-// normalizeVirtualKeyListedModels canonicalizes a listed_models block before it is written:
-// blank entries are dropped, a rule name that has already been resolved to an id is cleared (the
-// stored form is the id), and entries are ordered so the config hash is stable across loads.
+// normalizeVirtualKeyListedModels canonicalizes a listed_models block before it is written: blank
+// entries are dropped and entries are ordered so the config hash is stable across loads.
 //
 // It never changes the block's meaning: nil stays nil (feature off) and [] stays [] (deny
 // everything). Collapsing one into the other would silently switch the gate on or off.
@@ -72,11 +48,7 @@ func normalizeVirtualKeyListedModels(entries *[]TableListedModelEntry) {
 	for _, entry := range *entries {
 		entry.Provider = strings.TrimSpace(entry.Provider)
 		entry.Model = strings.TrimSpace(entry.Model)
-		entry.RoutingRuleID = strings.TrimSpace(entry.RoutingRuleID)
-		entry.RoutingRuleName = strings.TrimSpace(entry.RoutingRuleName)
-		if entry.RoutingRuleID != "" {
-			entry.RoutingRuleName = ""
-		}
+		entry.RoutingRule = strings.TrimSpace(entry.RoutingRule)
 		if entry.Provider == "" && entry.Model == "" && !entry.IsRule() {
 			continue
 		}
@@ -118,6 +90,9 @@ func ValidateVirtualKeyListedModels(entries []TableListedModelEntry) error {
 			return fmt.Errorf("listed_models entry %d must name a model or a routing rule", i)
 		}
 		if entry.IsRule() {
+			if strings.Contains(entry.RoutingRule, "/") {
+				return fmt.Errorf("listed_models entry %d names routing rule %q: a rule is listed by name, not as provider/model", i, entry.RoutingRule)
+			}
 			continue
 		}
 		if entry.Provider == "" || entry.Model == "" {

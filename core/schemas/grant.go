@@ -123,11 +123,11 @@ type Permit interface {
 	// RelayPermits is every relay the permit allows by name.
 	RelayPermits() []string
 
-	// ListedRules is every routing rule the permit names as callable by its holder, by stable rule
-	// ID. A rule listed here is what a source means when it says "this holder may call 'coding'": the
-	// caller asks for the rule by name and the routing layer resolves it, so the name never has to
-	// match anything on this side. nil means the source lists no rules, which is every permit that
-	// does not set it. See ProviderPermit.ListedModels for the model half of the same listing.
+	// ListedRules is every routing rule the permit names as callable by its holder, by name. The name
+	// is the entry's whole identity: it is what the caller asks for and what the listing shows, so a
+	// renamed rule stops being callable under its old name and a deleted one stops matching anything.
+	// nil means the source lists no rules, which is every permit that does not set it. See
+	// ProviderPermit.ListedModels for the model half of the same listing.
 	ListedRules() []string
 
 	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
@@ -179,9 +179,9 @@ type Access interface {
 	// is every access whose permits do not fill the block in; an empty non-nil slice lists nothing,
 	// and is a different answer from nil.
 	ListedModels() []ListedModelEntry
-	// ListedRules is the routing rules the caller may call by name, by stable rule ID. Its models
-	// are deliberately absent from ListedModels: the caller asks for the rule, and the targets
-	// behind it are not its to know.
+	// ListedRules is the routing rules the caller may call by name, by name. Its models are
+	// deliberately absent from ListedModels: the caller asks for the rule, and the targets behind it
+	// are not its to know.
 	ListedRules() []string
 	// AllowsEveryModel reports whether the request may use any model at all on provider: every
 	// permit deciding for the provider allows all of its models and blacklists none. It is the

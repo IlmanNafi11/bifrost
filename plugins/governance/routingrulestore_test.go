@@ -209,8 +209,8 @@ func TestRoutingRuleStore_ListedRuleNames(t *testing.T) {
 	require.NoError(t, err)
 	requestCtx := scopedCtx(vkID, "", "", "")
 
-	names := rules.ListedRuleNames(requestCtx, []string{"rule-coding", "rule-off", "rule-theirs", "rule-unknown"})
-	assert.Equal(t, []string{"coding"}, names, "only the rule that is enabled and in scope is listed")
+	names := rules.ListedRuleNames(requestCtx, []string{"coding", "retired", "theirs", "unknown"})
+	assert.Equal(t, []string{"coding"}, names, "only the rule that is enabled and in scope is listed: a disabled rule, another key's rule, and a name nothing answers to are all dropped")
 }
 
 // A nil access to the store is not a permission to skip the rule check: fail closed.
@@ -218,6 +218,6 @@ func TestRoutingRuleStore_FailClosed(t *testing.T) {
 	ctx := context.Background()
 	rules := &RoutingRuleStore{logger: NewMockLogger()}
 	assert.False(t, rules.AllowsRequest(emptyCtx(), "coding", "openai", "gpt-4o"))
-	assert.Empty(t, rules.ListedRuleNames(emptyCtx(), []string{"rule-coding"}), "nothing cached lists nothing")
+	assert.Empty(t, rules.ListedRuleNames(emptyCtx(), []string{"coding"}), "nothing cached lists nothing")
 	require.Error(t, rules.Reload(ctx, "rule-coding"), "a cache with no store cannot refresh, and says so")
 }

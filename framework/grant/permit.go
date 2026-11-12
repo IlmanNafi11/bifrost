@@ -113,10 +113,10 @@ func WithAllowAllProviders(allow bool) PermitOption {
 	return func(p *Permit) { p.allowAllProviders = allow }
 }
 
-// WithListedRules names the routing rules the permit's holder may call, by stable rule ID. See
+// WithListedRules names the routing rules the permit's holder may call, by name. See
 // schemas.Permit.ListedRules for what a listed rule buys; a nil slice lists none.
-func WithListedRules(ruleIDs []string) PermitOption {
-	return func(p *Permit) { p.listedRules = slices.Clone(ruleIDs) }
+func WithListedRules(ruleNames []string) PermitOption {
+	return func(p *Permit) { p.listedRules = slices.Clone(ruleNames) }
 }
 
 // NewPermit builds a Permit. See schemas.Permit for what each value means. The lists are deep

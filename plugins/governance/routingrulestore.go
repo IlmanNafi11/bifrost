@@ -248,20 +248,20 @@ func (s *RoutingRuleStore) AllowsRequest(ctx context.Context, requestedRuleName 
 	return def.allowsModel(provider, model)
 }
 
-// ListedRuleNames returns the display names of the rules a key may call, in the order the key listed
-// their ids, keeping only rules that are enabled and in scope. A rule that since fell off either is
-// dropped, which is what makes a deleted or disabled rule disappear from /v1/models on the request
-// that follows the invalidation.
-func (s *RoutingRuleStore) ListedRuleNames(ctx context.Context, ruleIDs []string) []string {
-	if s == nil || len(ruleIDs) == 0 {
+// ListedRuleNames returns the rules a key may call, in the order the key listed them, keeping only
+// entries an enabled, in-scope rule answers to by that name. A rule that since stopped existing,
+// was renamed, or fell out of scope is dropped, which is what makes it disappear from /v1/models on
+// the request that follows the invalidation.
+func (s *RoutingRuleStore) ListedRuleNames(ctx context.Context, ruleNames []string) []string {
+	if s == nil || len(ruleNames) == 0 {
 		return nil
 	}
 	chain := scopeChain(ctx)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	names := make([]string, 0, len(ruleIDs))
-	for _, id := range ruleIDs {
-		def := s.byID[id]
+	names := make([]string, 0, len(ruleNames))
+	for _, name := range ruleNames {
+		def := s.byName[name]
 		if def == nil || !def.enabled || !scopeMatches(def, chain) {
 			continue
 		}

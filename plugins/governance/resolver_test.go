@@ -1617,7 +1617,7 @@ func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
 	logger := NewMockLogger()
 
 	gpt := configstoreTables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
-	ruleEntry := configstoreTables.TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	ruleEntry := configstoreTables.TableListedModelEntry{RoutingRule: "coding"}
 	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
 	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"*"}),

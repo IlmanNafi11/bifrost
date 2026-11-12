@@ -1481,9 +1481,6 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	if len(vk.ListedModels) > 0 {
 		entries := make([]tables.TableListedModelEntry, len(vk.ListedModels))
 		copy(entries, vk.ListedModels)
-		for i := range entries {
-			entries[i].RoutingRuleName = ""
-		}
 		sort.Slice(entries, func(i, j int) bool {
 			a, b := entries[i], entries[j]
 			if a.Provider != b.Provider {
@@ -1492,7 +1489,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			if a.Model != b.Model {
 				return a.Model < b.Model
 			}
-			return a.RoutingRuleID < b.RoutingRuleID
+			return a.RoutingRule < b.RoutingRule
 		})
 		data, err := sonic.Marshal(entries)
 		if err != nil {

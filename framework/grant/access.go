@@ -168,42 +168,46 @@ func permitListsModel(p schemas.Permit, provider string, model string) bool {
 	return true
 }
 
-// ListedModels implements schemas.Access. Nil when no permit deciding for the access fills the block
-// in, which is every access that predates the listing and keeps the feature off. Otherwise the
-// entries are the union of what the caller's permits list, narrowed by the scoping permit under the
-// composition mode: a scoping permit that lists models makes the answer theirs to decide.
+// listedView is what one side of the fold says about the listing: the entries it names, and whether
+// it restricts the listing at all. A side that does not restrict it - no permit carries a block, or
+// one carries "*" - leaves the listing to whatever else decides.
+type listedView struct {
+	entries    []schemas.ListedModelEntry
+	restricted bool
+}
+
+// ListedModels implements schemas.Access. Nil when nothing deciding for the access restricts its
+// listing, which is every access that predates the block and keeps the feature off. Otherwise the
+// entries are what the caller's permits name, folded under the composition mode the way every other
+// permission in this type is: a side that restricts nothing contributes nothing under Intersect and
+// everything under Union.
 func (a *Access) ListedModels() []schemas.ListedModelEntry {
 	if a == nil {
 		return nil
 	}
-	base, anyListed := listedModelsOf(a.bases, a.matcher)
+	base := foldListedModels(a.bases)
 	if a.scoping == nil {
-		if !anyListed {
+		return base.entries
+	}
+	scoped := foldListedModels([]schemas.Permit{a.scoping})
+	switch {
+	case !scoped.restricted:
+		return base.entries
+	case !base.restricted:
+		if a.mode == Union {
 			return nil
 		}
-		return dedupeListedModels(base)
-	}
-	scoped, scopingLists := listedModelsOf([]schemas.Permit{a.scoping}, a.matcher)
-	if !anyListed && !scopingLists {
-		return nil
-	}
-	if !anyListed {
-		return dedupeListedModels(scoped)
-	}
-	if !scopingLists {
-		return dedupeListedModels(base)
-	}
-	switch a.mode {
-	case Union:
-		return dedupeListedModels(append(base, scoped...))
+		return scoped.entries
+	case a.mode == Union:
+		return dedupeListedModels(append(base.entries, scoped.entries...))
 	default:
 		// Intersect, and any unknown mode, fails closed: only what both sides list survives.
-		scopedSet := make(map[string]struct{}, len(scoped))
-		for _, entry := range scoped {
+		scopedSet := make(map[string]struct{}, len(scoped.entries))
+		for _, entry := range scoped.entries {
 			scopedSet[entry.ModelID()] = struct{}{}
 		}
-		kept := make([]schemas.ListedModelEntry, 0, len(base))
-		for _, entry := range base {
+		kept := make([]schemas.ListedModelEntry, 0, len(base.entries))
+		for _, entry := range base.entries {
 			if _, ok := scopedSet[entry.ModelID()]; ok {
 				kept = append(kept, entry)
 			}
@@ -212,89 +216,113 @@ func (a *Access) ListedModels() []schemas.ListedModelEntry {
 	}
 }
 
-// ListedRules implements schemas.Access. Nil when no permit deciding for the access names a rule;
-// otherwise the union of what the caller's permits name, narrowed by the scoping permit under the
-// composition mode exactly as ListedModels narrows the model half.
+// ListedRules implements schemas.Access. Nil when nothing deciding for the access names a rule;
+// otherwise what the caller's permits name, folded under the composition mode exactly as
+// ListedModels folds the model half. Rules are matched by name, which is the entry's identity.
 func (a *Access) ListedRules() []string {
 	if a == nil {
 		return nil
 	}
-	base := listedRulesOf(a.bases)
+	base, baseRestricts := foldListedRules(a.bases)
 	if a.scoping == nil {
 		return base
 	}
-	scoped := listedRulesOf([]schemas.Permit{a.scoping})
-	if base == nil {
-		return scoped
-	}
-	if scoped == nil {
+	scoped, scopingRestricts := foldListedRules([]schemas.Permit{a.scoping})
+	switch {
+	case !scopingRestricts:
 		return base
-	}
-	if a.mode == Union {
+	case !baseRestricts:
+		if a.mode == Union {
+			return nil
+		}
+		return scoped
+	case a.mode == Union:
 		return uniqueStrings(append(base, scoped...))
-	}
-	scopedSet := make(map[string]struct{}, len(scoped))
-	for _, id := range scoped {
-		scopedSet[id] = struct{}{}
-	}
-	kept := make([]string, 0, len(base))
-	for _, id := range base {
-		if _, ok := scopedSet[id]; ok {
-			kept = append(kept, id)
+	default:
+		scopedSet := make(map[string]struct{}, len(scoped))
+		for _, name := range scoped {
+			scopedSet[name] = struct{}{}
 		}
+		kept := make([]string, 0, len(base))
+		for _, name := range base {
+			if _, ok := scopedSet[name]; ok {
+				kept = append(kept, name)
+			}
+		}
+		return kept
 	}
-	return kept
 }
 
-// listedModelsOf reports the entries the permits list and whether any of them filled the block in at
-// all. A permit with no provider permit for the access does not contribute entries; a permit that
-// lists nothing for a provider still counts as having filled the block in, which is what makes the
-// listing authoritative rather than absent.
-func listedModelsOf(permits []schemas.Permit, matcher ModelMatcher) ([]schemas.ListedModelEntry, bool) {
+// foldListedModels reads the permits as one, the way the rest of Access reads them: what any of them
+// lists, the caller may see. A permit that restricts nothing - the common case, and every permit
+// written before the block existed - makes the whole side unrestricted, so the caller's listing is
+// not narrowed by the keys that happen to carry a block.
+func foldListedModels(permits []schemas.Permit) listedView {
+	view := listedView{}
+	restricting := 0
+	for _, permit := range permits {
+		if isNilPermit(permit) {
+			continue
+		}
+		entries, restricts := permitListedModels(permit)
+		if !restricts {
+			return listedView{}
+		}
+		restricting++
+		view.entries = append(view.entries, entries...)
+	}
+	if restricting == 0 {
+		return listedView{}
+	}
+	view.restricted = true
+	view.entries = dedupeListedModels(view.entries)
+	return view
+}
+
+// permitListedModels reports the models one permit lists and whether it restricts the listing at all.
+// A provider with no provider permit contributes nothing: the provider permission has already
+// settled that its models cannot be reached. A listed model is matched by exact name, as the gate
+// matches it, so a listing never shows a model ModelListed would refuse.
+func permitListedModels(permit schemas.Permit) ([]schemas.ListedModelEntry, bool) {
 	var entries []schemas.ListedModelEntry
-	anyListed := false
-	for _, permit := range permits {
-		if isNilPermit(permit) {
+	restricts := false
+	for _, pp := range permit.ProviderPermits() {
+		if pp.ListedModels == nil {
 			continue
 		}
-		listedCounts := false
-		for _, pp := range permit.ProviderPermits() {
-			if pp.ListedModels == nil {
-				continue
+		restricts = true
+		for _, model := range pp.ListedModels {
+			if model == Wildcard {
+				// A wildcard lists every model of the provider, which is not a list of entries.
+				return nil, false
 			}
-			listedCounts = true
-			for _, model := range pp.ListedModels {
-				if model == Wildcard {
-					// A wildcard lists every model of the provider; that cannot be expanded here, so
-					// the permit is treated as not restricting the listing.
-					continue
-				}
-				entries = append(entries, schemas.ListedModelEntry{Provider: pp.Provider, Model: model})
-			}
-		}
-		// A permit that fills the block in for no provider of its own changes nothing, but one that
-		// fills it in and names no model for a provider withholds that provider's models, which the
-		// gate reads through ModelListed. Only a permit that actually carried the block counts.
-		if listedCounts {
-			anyListed = true
+			entries = append(entries, schemas.ListedModelEntry{Provider: pp.Provider, Model: model})
 		}
 	}
-	_ = matcher
-	return entries, anyListed
+	return entries, restricts
 }
 
-func listedRulesOf(permits []schemas.Permit) []string {
-	var ids []string
+// foldListedRules reads the routing rules the permits name as one set. A permit that names none does
+// not restrict what the caller may call by rule name, for the same reason a permit without a block
+// does not restrict its listing.
+func foldListedRules(permits []schemas.Permit) ([]string, bool) {
+	var names []string
+	restricting := 0
 	for _, permit := range permits {
 		if isNilPermit(permit) {
 			continue
 		}
-		ids = append(ids, permit.ListedRules()...)
+		listed := permit.ListedRules()
+		if listed == nil {
+			return nil, false
+		}
+		restricting++
+		names = append(names, listed...)
 	}
-	if ids == nil {
-		return nil
+	if restricting == 0 {
+		return nil, false
 	}
-	return uniqueStrings(ids)
+	return uniqueStrings(names), true
 }
 
 func dedupeListedModels(entries []schemas.ListedModelEntry) []schemas.ListedModelEntry {

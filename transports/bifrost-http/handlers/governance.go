@@ -409,6 +409,19 @@ type CreateVirtualKeyRequest struct {
 	} `json:"agent_grants,omitempty"` // Empty means no agents allowed (deny-by-default)
 	// RelayGrants names the relays the key may call, one by one. Empty means no relay (deny-by-default).
 	RelayGrants []relayGrantBody `json:"relay_grants,omitempty"`
+	// ListedModels is the block that decides what this key sees in /v1/models and may call beyond
+	// allowed_models. Omitted leaves the feature off; [] lists nothing. See
+	// validateListedModelsBody for the rules each entry has to satisfy.
+	ListedModels []listedModelBody `json:"listed_models,omitempty"`
+}
+
+// listedModelBody is one entry of a virtual key's listed_models block: a model on a provider, or a
+// routing rule by name. Exactly one of the two forms is valid, which validateListedModelsBody
+// enforces.
+type listedModelBody struct {
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	RoutingRule string `json:"routing_rule,omitempty"`
 }
 
 // relayGrantBody is one relay a virtual key may call.
@@ -476,6 +489,9 @@ type UpdateVirtualKeyRequest struct {
 		AgentName string `json:"agent_name" validate:"required"`
 	} `json:"agent_grants,omitempty"` // Omitted leaves grants unchanged; [] clears all grants
 	RelayGrants []relayGrantBody `json:"relay_grants,omitempty"` // Omitted leaves grants unchanged; [] clears them
+	// ListedModels replaces the key's block as a whole: omitted leaves the stored block unchanged,
+	// [] denies every model, and entries replace it. A pointer distinguishes the three.
+	ListedModels *[]listedModelBody `json:"listed_models,omitempty"`
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -2142,6 +2158,166 @@ func relayGrantNames(grants []relayGrantBody) ([]string, error) {
 	return names, nil
 }
 
+// listedModelsProviderRestriction is the provider restriction a listed model entry is checked
+// against: the provider config's allowed_models and blacklisted_models, when the key has one.
+type listedModelsProviderRestriction struct {
+	allowed     schemas.WhiteList
+	blacklisted schemas.BlackList
+}
+
+// listedModelsScope is the owner chain a listed routing rule has to fall inside, most specific last.
+// A rule scoped to the key itself, its team, its customer or the deployment matches; a rule scoped to
+// another team does not, because the request it would answer never runs under it.
+type listedModelsScope struct {
+	virtualKeyID string
+	teamID       string
+	customerID   string
+}
+
+// matches reports whether rule is enabled and scoped to somewhere this key's requests reach.
+func (s listedModelsScope) matches(rule *configstoreTables.TableRoutingRule) bool {
+	scope := rule.Scope
+	if scope == "" {
+		scope = "global"
+	}
+	switch scope {
+	case "global":
+		return true
+	case "virtual_key":
+		return rule.ScopeID != nil && *rule.ScopeID == s.virtualKeyID && s.virtualKeyID != ""
+	case "team":
+		return rule.ScopeID != nil && *rule.ScopeID == s.teamID && s.teamID != ""
+	case "customer":
+		return rule.ScopeID != nil && *rule.ScopeID == s.customerID && s.customerID != ""
+	default:
+		// A user-scoped rule is scoped to a user the caller carries, which a key does not: it cannot be
+		// shown or called through a key, so listing it would promise something no request here can use.
+		return false
+	}
+}
+
+// stringOrEmpty reads a pointer string as a value, "" for nil.
+func stringOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// validateListedModelsBody checks a listed_models request block and turns it into the stored form.
+//
+// The block is a second, narrower layer over allowed_models: a model entry has to be one the layer
+// below already allows, and a rule entry has to name a rule that is enabled and scoped to this key.
+// Rejecting at write time is what keeps the block an operator statement about what the key may call
+// rather than a list of wishes. The cap, the model-or-rule exclusivity and the wildcard refusal are
+// checked by configstoreTables.ValidateVirtualKeyListedModels, so this only adds the cross-entity
+// checks; it calls that validator last so both agree.
+func (h *GovernanceHandler) validateListedModelsBody(
+	ctx context.Context,
+	entries []listedModelBody,
+	restrictions map[string]listedModelsProviderRestriction,
+	allowAllProviders bool,
+	scope listedModelsScope,
+) ([]configstoreTables.TableListedModelEntry, error) {
+	if len(entries) > configstoreTables.MaxVirtualKeyListedModelsEntries {
+		return nil, fmt.Errorf("listed_models can have at most %d entries, got %d", configstoreTables.MaxVirtualKeyListedModelsEntries, len(entries))
+	}
+
+	var rulesByName map[string][]*configstoreTables.TableRoutingRule
+	loadRules := func() error {
+		if rulesByName != nil {
+			return nil
+		}
+		rules, err := h.configStore.GetRoutingRules(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to load routing rules: %w", err)
+		}
+		rulesByName = make(map[string][]*configstoreTables.TableRoutingRule, len(rules))
+		for i := range rules {
+			rule := &rules[i]
+			rulesByName[rule.Name] = append(rulesByName[rule.Name], rule)
+		}
+		return nil
+	}
+
+	out := make([]configstoreTables.TableListedModelEntry, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for i, entry := range entries {
+		provider := strings.TrimSpace(entry.Provider)
+		model := strings.TrimSpace(entry.Model)
+		ruleName := strings.TrimSpace(entry.RoutingRule)
+		if (provider != "" || model != "") && ruleName != "" {
+			return nil, fmt.Errorf("listed_models entry %d cannot be both a model and a routing rule", i)
+		}
+		if ruleName == "" {
+			if provider == "" || model == "" {
+				return nil, fmt.Errorf("listed_models entry %d must name a model or a routing rule: a model entry needs both provider and model", i)
+			}
+			if provider == "*" || model == "*" {
+				return nil, fmt.Errorf("listed_models entry %d cannot be a wildcard: leave the block absent to allow every model", i)
+			}
+			restriction, configured := restrictions[provider]
+			if !configured {
+				if !allowAllProviders {
+					return nil, fmt.Errorf("listed_models entry %d names provider %q, which this virtual key does not configure", i, provider)
+				}
+			} else {
+				if !restriction.allowed.IsAllowed(model) {
+					return nil, fmt.Errorf("listed_models entry %d names %q, which allowed_models of provider %s does not allow", i, model, provider)
+				}
+				if restriction.blacklisted.IsBlocked(model) {
+					return nil, fmt.Errorf("listed_models entry %d names %q, which blacklisted_models of provider %s blocks", i, model, provider)
+				}
+			}
+			key := "model:" + provider + "/" + model
+			if _, dup := seen[key]; dup {
+				return nil, fmt.Errorf("listed_models entry %d repeats %s/%s", i, provider, model)
+			}
+			seen[key] = struct{}{}
+			out = append(out, configstoreTables.TableListedModelEntry{Provider: provider, Model: model})
+			continue
+		}
+
+		if err := loadRules(); err != nil {
+			return nil, err
+		}
+		candidates := rulesByName[ruleName]
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("listed_models entry %d names routing rule %q, which does not exist", i, ruleName)
+		}
+		var matching []*configstoreTables.TableRoutingRule
+		for _, candidate := range candidates {
+			if scope.matches(candidate) {
+				matching = append(matching, candidate)
+			}
+		}
+		switch len(matching) {
+		case 0:
+			return nil, fmt.Errorf("listed_models entry %d names routing rule %q, which is not scoped to this virtual key, its team or its customer", i, ruleName)
+		case 1:
+		default:
+			// Two rules of the same name reach this key from different scopes. Which one a request
+			// would run is decided by the routing chain at request time; a listing cannot promise
+			// both, so the operator has to rename one.
+			return nil, fmt.Errorf("listed_models entry %d names routing rule %q, which is ambiguous: %d rules of that name are in scope", i, ruleName, len(matching))
+		}
+		if !matching[0].EnabledValue() {
+			return nil, fmt.Errorf("listed_models entry %d names routing rule %q, which is disabled", i, ruleName)
+		}
+		key := "rule:" + ruleName
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("listed_models entry %d repeats routing rule %q", i, ruleName)
+		}
+		seen[key] = struct{}{}
+		out = append(out, configstoreTables.TableListedModelEntry{RoutingRule: ruleName})
+	}
+
+	if err := configstoreTables.ValidateVirtualKeyListedModels(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func classifyRelayGrantError(err error) error {
 	if errors.Is(err, configstore.ErrInvalidRelayGrant) {
 		return &badRequestError{err: err}
@@ -2229,10 +2405,39 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// The id is chosen before the transaction so a rule scoped to this key can already be resolved
+	// against it, which is what lets an operator list a key-scoped rule in the same request that
+	// creates the key.
+	vkID := uuid.NewString()
+	var listedModels []configstoreTables.TableListedModelEntry
+	if req.ListedModels != nil {
+		if req.ProviderConfigs == nil && !req.AllowAllProviders {
+			// No provider is reachable at all, so a listed model would promise something no request
+			// can use. An empty block on such a key is accepted: it changes nothing.
+			if len(req.ListedModels) > 0 {
+				SendError(ctx, 400, "listed_models requires provider_configs or allow_all_providers: this virtual key configures no provider")
+				return
+			}
+		}
+		restrictions := make(map[string]listedModelsProviderRestriction, len(req.ProviderConfigs))
+		for _, pc := range req.ProviderConfigs {
+			restrictions[pc.Provider] = listedModelsProviderRestriction{allowed: pc.AllowedModels, blacklisted: pc.BlacklistedModels}
+		}
+		listed, err := h.validateListedModelsBody(ctx, req.ListedModels, restrictions, req.AllowAllProviders, listedModelsScope{
+			virtualKeyID: vkID,
+			teamID:       stringOrEmpty(req.TeamID),
+			customerID:   stringOrEmpty(req.CustomerID),
+		})
+		if err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+		listedModels = listed
+	}
 	var vk configstoreTables.TableVirtualKey
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		vk = configstoreTables.TableVirtualKey{
-			ID:                uuid.NewString(),
+			ID:                vkID,
 			Name:              req.Name,
 			Value:             *schemas.NewSecretVar(governance.GenerateVirtualKey()),
 			Description:       req.Description,
@@ -2248,6 +2453,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			// Stored as given: nil is inherit, so no defaulting here.
 			DisableContentLogging: req.DisableContentLogging,
 			Metadata:              req.Metadata,
+			ListedModels:          listedModels,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -2666,6 +2872,40 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// The block is validated against the key's provider configs as this request leaves them, so a
+	// request that widens allowed_models and lists the newly allowed model in the same call is
+	// accepted, and one that narrows allowed_models below a listed model is refused.
+	var listedModels []configstoreTables.TableListedModelEntry
+	if req.ListedModels != nil {
+		restrictions := make(map[string]listedModelsProviderRestriction, len(vk.ProviderConfigs))
+		for _, pc := range vk.ProviderConfigs {
+			restrictions[pc.Provider] = listedModelsProviderRestriction{allowed: pc.AllowedModels, blacklisted: pc.BlacklistedModels}
+		}
+		allowAll := vk.AllowAllProviders
+		if req.AllowAllProviders != nil {
+			allowAll = *req.AllowAllProviders
+		}
+		if req.ProviderConfigs != nil {
+			restrictions = make(map[string]listedModelsProviderRestriction, len(req.ProviderConfigs))
+			for _, pc := range req.ProviderConfigs {
+				restrictions[pc.Provider] = listedModelsProviderRestriction{allowed: pc.AllowedModels, blacklisted: pc.BlacklistedModels}
+			}
+		}
+		if len(*req.ListedModels) > 0 && len(restrictions) == 0 && !allowAll {
+			SendError(ctx, 400, "listed_models requires provider_configs or allow_all_providers: this virtual key configures no provider")
+			return
+		}
+		var err error
+		listedModels, err = h.validateListedModelsBody(ctx, *req.ListedModels, restrictions, allowAll, listedModelsScope{
+			virtualKeyID: vk.ID,
+			teamID:       stringOrEmpty(vk.TeamID),
+			customerID:   stringOrEmpty(vk.CustomerID),
+		})
+		if err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+	}
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		var rateLimitIDToDelete string
 		var providerBudgetIDsToDelete []string
@@ -2722,6 +2962,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			vk.AllowAllProviders = *req.AllowAllProviders
 		}
 		applyVirtualKeyContentLoggingUpdate(vk, &req)
+		if req.ListedModels != nil {
+			vk.ListedModels = listedModels
+		}
 		// VK top-level and per-provider budgets/rate-limits are stored in VK-scoped model
 		// configs (the single source of truth), written by syncVKGovernanceToModelConfigs
 		// below. Per-provider desired state is accumulated while reconciling provider config rows.
