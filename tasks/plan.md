@@ -150,28 +150,28 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 6: UI
 
-- [ ] **Task 13: Types + zod + helper murni**
+- [x] **Task 13: Types + zod + helper murni**
   - Description: `ListedModelsEntry` di `ui/lib/types/governance.ts`; `VirtualKey` + create/update request dapat `listed_models`; validator zod lokal di `virtualKeySheet.tsx`; helper murni `listedModelsOptionSource(providerConfigs, rules)` untuk picker (hanya model dari allowed + rule scope cocok).
   - Acceptance: tipe sesuai shape API; helper mengembalikan opsi yang benar dari allowed+rule; Vitest murni hijau.
   - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`.
   - Deps: T11 (shape). Files: `ui/lib/types/governance.ts`, `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`, test terkait.
   - Scope: S (3).
 
-- [ ] **Task 14: `listedModelsEditor.tsx`**
+- [x] **Task 14: `listedModelsEditor.tsx`**
   - Description: editor daftar entry `{provider, model}` atau rule, selector di atas + baris removable (pola `relayGrantsEditor`/`agentGrantsEditor`); picker model dari `allowed_models` + rule scope-cocok; testid `vk-listed-models-add`, `vk-listed-models-remove-${i}`; cap 100.
   - Acceptance: baris add/remove; picker tidak menawarkan model di luar allowed; testid sesuai spec; Vitest komponen hijau.
   - Verify: `cd ui && npx vitest run components/ui/listedModelsEditor`; `npm run typecheck`.
   - Deps: T13. Files: `ui/components/ui/listedModelsEditor.tsx` (baru), `listedModelsEditor.test.tsx` (baru).
   - Scope: M (2).
 
-- [ ] **Task 15: Wire ke `virtualKeySheet.tsx`**
+- [x] **Task 15: Wire ke `virtualKeySheet.tsx`**
   - Description: blok "Allowed listed models" di atas/setelah Provider Configurations (gated `!isGovernedByOwnerProfile`), map ke `form` state, serialize pada create/update request.
   - Acceptance: blok tampil; submit mengirim `listed_models`; nilai edit ter-load.
   - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`; `npm run typecheck`.
   - Deps: T14. Files: `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`.
   - Scope: S (1).
 
-- [ ] **Task 16: i18n semua locale**
+- [x] **Task 16: i18n semua locale**
   - Description: key `listedModels.*` (title/tooltip/add/remove/empty/validation) di namespace `governance`, ditambah ke `en` + 11 locale lain dengan terjemahan nyata.
   - Acceptance: `npm run i18n:check` exit 0; tidak ada string hardcoded baru.
   - Verify: `cd ui && npm run i18n:check`.
