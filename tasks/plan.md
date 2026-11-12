@@ -87,7 +87,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 3: Governance gate + rule cache (plugins/governance)
 
-- [ ] **Task 6: `permitForVirtualKey` membangun listed**
+- [x] **Task 6: `permitForVirtualKey` membangun listed**
   - Description: dari `TableVirtualKey.ListedModels`, bangun `ProviderPermit.ListedModels` per provider (entry model) dan `WithListedRules(ruleIDs)` di `grant.NewPermit` (store.go:1528). Entry model di luar provider permit → skip (fail closed; validasi handler sudah menolak, ini jaring kedua).
   - Acceptance: permit provider B membawa `ListedModels=["gpt-5.4"]`; permit membawa `ListedRules` rule IDs; VK tanpa `listed_models` tetap nil.
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run ListedModels`.

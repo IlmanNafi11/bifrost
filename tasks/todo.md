@@ -43,7 +43,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 3: Governance gate + rule cache
 
-- [ ] **T6 — `permitForVirtualKey` membangun listed**
+- [x] **T6 — `permitForVirtualKey` membangun listed**
   - Acceptance: permit provider membawa `ListedModels`; permit membawa `ListedRules`; VK tanpa listed tetap nil.
   - Verify: `cd plugins/governance && GOWORK=off go test ./... -run ListedModels`
   - Files: `plugins/governance/store.go`, `permits_test.go`
