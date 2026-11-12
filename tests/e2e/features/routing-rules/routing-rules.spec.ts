@@ -984,4 +984,60 @@ test.describe("Routing Rules", () => {
       ).toBeVisible();
     });
   });
+
+  test.describe("Model Probe", () => {
+    test("should offer Test on a target and a fallback row, and report the verdict as a toast", async ({
+      page,
+      routingRulesPage,
+    }) => {
+      // The probe is a real provider call, so the answer is stubbed: what the UI owes the
+      // operator is that the button sits on the row it belongs to and its verdict reaches them.
+      await page.route("**/api/models/test", async (route) => {
+        const sent = route.request().postDataJSON() as {
+          provider: string;
+          model: string;
+        };
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            mode: "chat",
+            provider: sent.provider,
+            model: sent.model,
+            ttft_ms: 120,
+            total_ms: 340,
+            key_name: "e2e key",
+          }),
+        });
+      });
+
+      const ruleData = createRoutingRuleData({
+        name: `Model Probe Rule ${Date.now()}`,
+        enabled: false,
+        provider: "openai",
+      });
+      createdRules.push(ruleData.name);
+      await routingRulesPage.createRoutingRule(ruleData);
+
+      await routingRulesPage.openEditSheet(ruleData.name);
+      await routingRulesPage.setTargetModel("gpt-4o-mini");
+
+      // A fallback row without a concrete model has nothing to probe, so its button is absent.
+      const index = await routingRulesPage.addFallbackProvider("openai");
+      await expect(routingRulesPage.getTestButton(index)).toHaveCount(0);
+
+      const targetTest = routingRulesPage.getTestButton("target");
+      await expect(targetTest).toBeVisible();
+      await targetTest.click();
+
+      const toast = routingRulesPage.getToast("success");
+      await expect(toast).toBeVisible();
+      await expect(toast).toContainText("gpt-4o-mini");
+      await expect(toast).toContainText("TTFT 120 ms");
+      await expect(toast).toContainText("total 340 ms");
+      // A probe writes no log, cost or stats entry, so the sheet must not be disturbed by it.
+      await expect(routingRulesPage.sheet).toBeVisible();
+    });
+  });
 });

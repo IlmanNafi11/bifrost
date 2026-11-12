@@ -797,6 +797,37 @@ export class RoutingRulesPage extends BasePage {
   }
 
   /**
+   * Pick a model on the routing target row (index 0). The model input is a searchable popover, the
+   * same shape a fallback row uses, so the flow is identical.
+   */
+  async setTargetModel(model: string): Promise<void> {
+    const modelSelect = this.sheet.getByTestId("routing-target-0-model-select");
+    await modelSelect.getByRole("combobox").click();
+    const popover = this.page.locator('[data-slot="popover-content"]').last();
+    const search = popover.locator("input").first();
+    await search.waitFor({ state: "visible", timeout: 5000 });
+    await search.fill(model);
+    await popover
+      .getByRole("option", { name: new RegExp(model, "i") })
+      .first()
+      .click({ force: true });
+    await this.page
+      .locator('[data-slot="popover-content"]')
+      .last()
+      .waitFor({ state: "hidden", timeout: 5000 })
+      .catch(() => {});
+  }
+
+  /**
+   * The Test button on the routing target row, or on a fallback row.
+   */
+  getTestButton(row: number | "target"): Locator {
+    return row === "target"
+      ? this.sheet.getByTestId("routing-target-0").getByTestId("model-test-button")
+      : this.sheet.getByTestId(`routing-fallback-${row}`).getByTestId("model-test-button");
+  }
+
+  /**
    * The provider currently selected on a fallback row.
    */
   async getFallbackProvider(index: number): Promise<string | null> {
