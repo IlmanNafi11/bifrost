@@ -1636,7 +1636,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// listing is left alone, as is an ungranted user the caller asked to have admitted.
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
 		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
-		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
+		result.ListModelsResponse.Data = p.filterModelsForAccess(ctx, access, result.ListModelsResponse.Data)
 	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)

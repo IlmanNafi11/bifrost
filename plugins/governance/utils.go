@@ -128,11 +128,17 @@ func getWeight(w *float64) float64 {
 // composition removed is dropped: the listing and the request agree by construction rather than by
 // two implementations happening to match.
 //
+// When the access carries a listing (a virtual key's listed_models block, or any source that starts
+// filling one in), the block is the whole answer instead: the caller is shown exactly the models it
+// listed and the names of the routing rules it listed that are still enabled and in scope. A rule's
+// own targets are deliberately not shown - the caller asks for the rule by name, and the models
+// behind it are not its to know.
+//
 // The access is handed in rather than resolved here. A listing is produced after the request has
 // been evaluated, and resolving again at that point would answer for whatever configuration has
 // become since; what a caller may list is what it was admitted under. No access lists nothing: a
 // request that presented nothing is not narrowed at all, and the caller gates on that before asking.
-func (p *GovernancePlugin) filterModelsForAccess(access schemas.Access, models []schemas.Model) []schemas.Model {
+func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, access schemas.Access, models []schemas.Model) []schemas.Model {
 	if access == nil {
 		return []schemas.Model{}
 	}
@@ -144,7 +150,34 @@ func (p *GovernancePlugin) filterModelsForAccess(access schemas.Access, models [
 			filtered = append(filtered, model)
 		}
 	}
-	return filtered
+
+	listed := access.ListedModels()
+	if listed == nil {
+		return filtered
+	}
+
+	// The listing is authoritative: keep only what it names, in the order the listing produced.
+	listedSet := make(map[string]struct{}, len(listed))
+	for _, entry := range listed {
+		listedSet[entry.ModelID()] = struct{}{}
+	}
+	byID := make(map[string]schemas.Model, len(filtered))
+	for _, model := range filtered {
+		byID[model.ID] = model
+	}
+	out := make([]schemas.Model, 0, len(listed))
+	for _, entry := range listed {
+		if model, ok := byID[entry.ModelID()]; ok {
+			out = append(out, model)
+		}
+	}
+	// A rule's name is not a catalog model, so it is added here rather than looked up.
+	if rules := p.store.RoutingRules(); rules != nil {
+		for _, name := range rules.ListedRuleNames(ctx, access.ListedRules()) {
+			out = append(out, schemas.Model{ID: name})
+		}
+	}
+	return out
 }
 
 // validateRequiredHeaders checks that all configured required headers are present in the request.

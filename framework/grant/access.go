@@ -168,6 +168,165 @@ func permitListsModel(p schemas.Permit, provider string, model string) bool {
 	return true
 }
 
+// ListedModels implements schemas.Access. Nil when no permit deciding for the access fills the block
+// in, which is every access that predates the listing and keeps the feature off. Otherwise the
+// entries are the union of what the caller's permits list, narrowed by the scoping permit under the
+// composition mode: a scoping permit that lists models makes the answer theirs to decide.
+func (a *Access) ListedModels() []schemas.ListedModelEntry {
+	if a == nil {
+		return nil
+	}
+	base, anyListed := listedModelsOf(a.bases, a.matcher)
+	if a.scoping == nil {
+		if !anyListed {
+			return nil
+		}
+		return dedupeListedModels(base)
+	}
+	scoped, scopingLists := listedModelsOf([]schemas.Permit{a.scoping}, a.matcher)
+	if !anyListed && !scopingLists {
+		return nil
+	}
+	if !anyListed {
+		return dedupeListedModels(scoped)
+	}
+	if !scopingLists {
+		return dedupeListedModels(base)
+	}
+	switch a.mode {
+	case Union:
+		return dedupeListedModels(append(base, scoped...))
+	default:
+		// Intersect, and any unknown mode, fails closed: only what both sides list survives.
+		scopedSet := make(map[string]struct{}, len(scoped))
+		for _, entry := range scoped {
+			scopedSet[entry.ModelID()] = struct{}{}
+		}
+		kept := make([]schemas.ListedModelEntry, 0, len(base))
+		for _, entry := range base {
+			if _, ok := scopedSet[entry.ModelID()]; ok {
+				kept = append(kept, entry)
+			}
+		}
+		return dedupeListedModels(kept)
+	}
+}
+
+// ListedRules implements schemas.Access. Nil when no permit deciding for the access names a rule;
+// otherwise the union of what the caller's permits name, narrowed by the scoping permit under the
+// composition mode exactly as ListedModels narrows the model half.
+func (a *Access) ListedRules() []string {
+	if a == nil {
+		return nil
+	}
+	base := listedRulesOf(a.bases)
+	if a.scoping == nil {
+		return base
+	}
+	scoped := listedRulesOf([]schemas.Permit{a.scoping})
+	if base == nil {
+		return scoped
+	}
+	if scoped == nil {
+		return base
+	}
+	if a.mode == Union {
+		return uniqueStrings(append(base, scoped...))
+	}
+	scopedSet := make(map[string]struct{}, len(scoped))
+	for _, id := range scoped {
+		scopedSet[id] = struct{}{}
+	}
+	kept := make([]string, 0, len(base))
+	for _, id := range base {
+		if _, ok := scopedSet[id]; ok {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
+// listedModelsOf reports the entries the permits list and whether any of them filled the block in at
+// all. A permit with no provider permit for the access does not contribute entries; a permit that
+// lists nothing for a provider still counts as having filled the block in, which is what makes the
+// listing authoritative rather than absent.
+func listedModelsOf(permits []schemas.Permit, matcher ModelMatcher) ([]schemas.ListedModelEntry, bool) {
+	var entries []schemas.ListedModelEntry
+	anyListed := false
+	for _, permit := range permits {
+		if isNilPermit(permit) {
+			continue
+		}
+		listedCounts := false
+		for _, pp := range permit.ProviderPermits() {
+			if pp.ListedModels == nil {
+				continue
+			}
+			listedCounts = true
+			for _, model := range pp.ListedModels {
+				if model == Wildcard {
+					// A wildcard lists every model of the provider; that cannot be expanded here, so
+					// the permit is treated as not restricting the listing.
+					continue
+				}
+				entries = append(entries, schemas.ListedModelEntry{Provider: pp.Provider, Model: model})
+			}
+		}
+		// A permit that fills the block in for no provider of its own changes nothing, but one that
+		// fills it in and names no model for a provider withholds that provider's models, which the
+		// gate reads through ModelListed. Only a permit that actually carried the block counts.
+		if listedCounts {
+			anyListed = true
+		}
+	}
+	_ = matcher
+	return entries, anyListed
+}
+
+func listedRulesOf(permits []schemas.Permit) []string {
+	var ids []string
+	for _, permit := range permits {
+		if isNilPermit(permit) {
+			continue
+		}
+		ids = append(ids, permit.ListedRules()...)
+	}
+	if ids == nil {
+		return nil
+	}
+	return uniqueStrings(ids)
+}
+
+func dedupeListedModels(entries []schemas.ListedModelEntry) []schemas.ListedModelEntry {
+	if entries == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(entries))
+	out := make([]schemas.ListedModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		id := entry.ModelID()
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 // AllowsEveryModel implements schemas.Access.
 func (a *Access) AllowsEveryModel(provider string) bool {
 	if a == nil {

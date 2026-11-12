@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -1088,7 +1090,7 @@ func TestFilterModelsForAccess(t *testing.T) {
 
 		access, err := plugin.ResolveAccess(ctx)
 		require.NoError(t, err)
-		filtered := plugin.filterModelsForAccess(access, models)
+		filtered := plugin.filterModelsForAccess(ctx, access, models)
 
 		ids := make([]string, 0, len(filtered))
 		for _, model := range filtered {
@@ -1106,7 +1108,7 @@ func TestFilterModelsForAccess(t *testing.T) {
 
 		access, err := plugin.ResolveAccess(ctx)
 		require.NoError(t, err)
-		filtered := plugin.filterModelsForAccess(access, models)
+		filtered := plugin.filterModelsForAccess(ctx, access, models)
 
 		assert.NotNil(t, filtered)
 		assert.Empty(t, filtered)
@@ -1121,7 +1123,7 @@ func TestFilterModelsForAccess(t *testing.T) {
 
 		access, err := plugin.ResolveAccess(ctx)
 		require.NoError(t, err)
-		filtered := plugin.filterModelsForAccess(access, models)
+		filtered := plugin.filterModelsForAccess(ctx, access, models)
 
 		assert.Empty(t, filtered)
 	})
@@ -1767,4 +1769,64 @@ func TestPermitForVirtualKey_ListedModels(t *testing.T) {
 	require.Len(t, plainPermit.ProviderPermits(), 1)
 	assert.Nil(t, plainPermit.ProviderPermits()[0].ListedModels)
 	assert.Nil(t, plainPermit.ListedRules())
+}
+
+// A key with a listed_models block lists exactly its entries, plus the names of the routing rules it
+// listed that are still enabled and in scope. A model entry keeps its provider prefix, because that
+// is how it is called; a rule entry is the bare name, because that is how it is called too.
+func TestFilterModelsForAccess_ListedModels(t *testing.T) {
+	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+		{Provider: "deepseek", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{
+		{Provider: "openai", Model: "gpt-5.4"},
+		{RoutingRuleID: "rule-coding"},
+		{RoutingRuleID: "rule-off"},
+		{RoutingRuleID: "rule-gone"},
+	}
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RoutingRules: []configstoreTables.TableRoutingRule{
+			{
+				ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+				CelExpression: "true",
+				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1}},
+			},
+			{
+				ID: "rule-off", Name: "retired", Scope: "global", Enabled: bifrost.Ptr(false),
+				CelExpression: "true",
+				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-pro"), Weight: 1}},
+			},
+		},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	models := []schemas.Model{
+		{ID: "openai/gpt-5.4"},
+		{ID: "openai/gpt-4o"},
+		{ID: "deepseek/deepseek-v4-flash"},
+		{ID: "deepseek/deepseek-v4-pro"},
+	}
+
+	ctx := presentCtx("sk-bf-listed")
+	access, err := plugin.ResolveAccess(ctx)
+	require.NoError(t, err)
+	filtered := plugin.filterModelsForAccess(ctx, access, models)
+
+	ids := make([]string, 0, len(filtered))
+	for _, model := range filtered {
+		ids = append(ids, model.ID)
+	}
+	assert.Equal(t, []string{"openai/gpt-5.4", "coding"}, ids,
+		"the listing is exactly the model entry and the enabled, in-scope rule - a disabled or deleted rule is not shown")
+
+	// A rule that is enabled and in scope still shows no model of its own: its targets are reached
+	// by asking for the rule, not by listing them.
+	assert.NotContains(t, ids, "deepseek/deepseek-v4-flash")
 }

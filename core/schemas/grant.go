@@ -174,6 +174,15 @@ type Access interface {
 	// A request that may not use the pair at all is not listed either: this never widens what
 	// IsModelAllowed refuses.
 	ModelListed(provider string, model string) bool
+	// ListedModels is the listing itself, for consumers that produce it rather than test one model:
+	// the exact entries a caller may see and call. Nil means no source restricts its listing, which
+	// is every access whose permits do not fill the block in; an empty non-nil slice lists nothing,
+	// and is a different answer from nil.
+	ListedModels() []ListedModelEntry
+	// ListedRules is the routing rules the caller may call by name, by stable rule ID. Its models
+	// are deliberately absent from ListedModels: the caller asks for the rule, and the targets
+	// behind it are not its to know.
+	ListedRules() []string
 	// AllowsEveryModel reports whether the request may use any model at all on provider: every
 	// permit deciding for the provider allows all of its models and blacklists none. It is the
 	// question to ask when a request will run models it does not name, such as a batch defined by
@@ -252,6 +261,18 @@ type Access interface {
 type Limits interface {
 	Budgets() []Limit
 	RateLimits() []Limit
+}
+
+// ListedModelEntry is one model a listing may show: a provider and a model name, spelled so the
+// entry reads the same in a config file, a stored row and a /v1/models response.
+type ListedModelEntry struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// ModelID is the entry as a caller spells it: "provider/model", the OpenAI-compatible listing form.
+func (e ListedModelEntry) ModelID() string {
+	return e.Provider + "/" + e.Model
 }
 
 // ProviderPermit is permission to use one provider, with the model and key restrictions that come
