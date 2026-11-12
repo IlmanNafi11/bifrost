@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "測試此模型",
+		"aria": "測試 {{label}}",
+		"keyAuto": "自動",
+		"successTitle": "{{label}} 已回應",
+		"failedTitle": "{{label}} 失敗",
+		"failed": "供應商未回傳任何訊息",
+		"streamingDescription": "首字延遲 {{ttft}} 毫秒 · 總計 {{total}} 毫秒 · 金鑰 {{key}}",
+		"unaryDescription": "延遲 {{total}} 毫秒 · 金鑰 {{key}}",
+		"failedDescription": "{{reason}} · 金鑰 {{key}}",
+		"modeUnsupported": "此模式無法測試"
+	},
 	"providers": {
 		"title": "供應商",
 		"configuredProviders": "已配置的供應商",

@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "このモデルをテスト",
+		"aria": "{{label}} をテスト",
+		"keyAuto": "自動",
+		"successTitle": "{{label}} が応答しました",
+		"failedTitle": "{{label}} が失敗しました",
+		"failed": "プロバイダーからメッセージが返されませんでした",
+		"streamingDescription": "TTFT {{ttft}} ms · 合計 {{total}} ms · キー {{key}}",
+		"unaryDescription": "レイテンシ {{total}} ms · キー {{key}}",
+		"failedDescription": "{{reason}} · キー {{key}}",
+		"modeUnsupported": "このモードはテストできません"
+	},
 	"providers": {
 		"title": "プロバイダー",
 		"configuredProviders": "構成済みプロバイダー",

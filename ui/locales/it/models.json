@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "Testa questo modello",
+		"aria": "Testa {{label}}",
+		"keyAuto": "automatica",
+		"successTitle": "{{label}} ha risposto",
+		"failedTitle": "{{label}} non ha risposto",
+		"failed": "Il provider non ha restituito alcun messaggio",
+		"streamingDescription": "TTFT {{ttft}} ms · totale {{total}} ms · chiave {{key}}",
+		"unaryDescription": "Latenza {{total}} ms · chiave {{key}}",
+		"failedDescription": "{{reason}} · chiave {{key}}",
+		"modeUnsupported": "Questa modalità non può essere testata"
+	},
 	"providers": {
 		"title": "Provider",
 		"configuredProviders": "Provider configurati",

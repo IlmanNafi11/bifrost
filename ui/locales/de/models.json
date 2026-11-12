@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "Dieses Modell testen",
+		"aria": "{{label}} testen",
+		"keyAuto": "automatisch",
+		"successTitle": "{{label}} hat geantwortet",
+		"failedTitle": "{{label}} ist fehlgeschlagen",
+		"failed": "Der Anbieter hat keine Meldung zurückgegeben",
+		"streamingDescription": "TTFT {{ttft}} ms · gesamt {{total}} ms · Schlüssel {{key}}",
+		"unaryDescription": "Latenz {{total}} ms · Schlüssel {{key}}",
+		"failedDescription": "{{reason}} · Schlüssel {{key}}",
+		"modeUnsupported": "Dieser Modus kann nicht getestet werden"
+	},
 	"providers": {
 		"title": "Anbieter",
 		"configuredProviders": "Konfigurierte Anbieter",

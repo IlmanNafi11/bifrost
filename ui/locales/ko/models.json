@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "이 모델 테스트",
+		"aria": "{{label}} 테스트",
+		"keyAuto": "자동",
+		"successTitle": "{{label}}이(가) 응답했습니다",
+		"failedTitle": "{{label}}이(가) 실패했습니다",
+		"failed": "프로바이더가 메시지를 반환하지 않았습니다",
+		"streamingDescription": "TTFT {{ttft}} ms · 총 {{total}} ms · 키 {{key}}",
+		"unaryDescription": "지연 시간 {{total}} ms · 키 {{key}}",
+		"failedDescription": "{{reason}} · 키 {{key}}",
+		"modeUnsupported": "이 모드는 테스트할 수 없습니다"
+	},
 	"providers": {
 		"title": "공급자",
 		"configuredProviders": "구성된 공급자",

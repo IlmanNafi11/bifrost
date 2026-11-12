@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "Tester ce modèle",
+		"aria": "Tester {{label}}",
+		"keyAuto": "automatique",
+		"successTitle": "{{label}} a répondu",
+		"failedTitle": "Échec de {{label}}",
+		"failed": "Le fournisseur n'a renvoyé aucun message",
+		"streamingDescription": "TTFT {{ttft}} ms · total {{total}} ms · clé {{key}}",
+		"unaryDescription": "Latence {{total}} ms · clé {{key}}",
+		"failedDescription": "{{reason}} · clé {{key}}",
+		"modeUnsupported": "Ce mode ne peut pas être testé"
+	},
 	"providers": {
 		"title": "Fournisseurs",
 		"configuredProviders": "Fournisseurs configurés",

@@ -1,4 +1,16 @@
 {
+	"modelTest": {
+		"tooltip": "Проверить эту модель",
+		"aria": "Проверить {{label}}",
+		"keyAuto": "автоматический",
+		"successTitle": "{{label}} ответила",
+		"failedTitle": "{{label}}: ошибка",
+		"failed": "Провайдер не вернул сообщение",
+		"streamingDescription": "TTFT {{ttft}} мс · всего {{total}} мс · ключ {{key}}",
+		"unaryDescription": "Задержка {{total}} мс · ключ {{key}}",
+		"failedDescription": "{{reason}} · ключ {{key}}",
+		"modeUnsupported": "Этот режим нельзя проверить"
+	},
 	"providers": {
 		"title": "Провайдеры",
 		"configuredProviders": "Настроенные провайдеры",
