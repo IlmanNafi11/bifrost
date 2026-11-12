@@ -80,13 +80,13 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 5: Handler + config
 
-- [ ] **T11 — Validasi `listed_models` di handler VK create/update**
+- [x] **T11 — Validasi `listed_models` di handler VK create/update**
   - Acceptance: valid diterima; model di luar allowed/tidak dikenal → 400; rule tak ada/scope tak cocok → 400; >100 → 400; dashboard `/api/models` tetap penuh.
   - Verify: `cd transports/bifrost-http && GOWORK=off go test ./handlers/ -run 'VirtualKey|ListedModels'`
   - Files: `transports/bifrost-http/handlers/governance.go`, `governance_test.go`
   - Deps: T8, T10 · Size: M
 
-- [ ] **T12 — `config.schema.json` + name→ID di config load**
+- [x] **T12 — `config.schema.json` + name→ID di config load**
   - Acceptance: schema menerima `listed_models`; nama rule di-resolve ke ID; ambigu ditolak; hash stabil.
   - Verify: `cd transports/bifrost-http && GOWORK=off go test ./lib/ -run 'ListedModels|RoutingRuleID'`
   - Files: `transports/config.schema.json`, `transports/bifrost-http/lib/config.go`, `config_test.go`

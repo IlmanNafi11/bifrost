@@ -137,7 +137,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: T8, T10. Files: `transports/bifrost-http/handlers/governance.go`, `governance_test.go`.
   - Scope: M (3).
 
-- [ ] **Task 12: `config.schema.json` + name→ID di config load**
+- [x] **Task 12: `config.schema.json` + name→ID di config load**
   - Description: `virtual_keys.items.properties.listed_models` di `transports/config.schema.json` (items dengan `provider`/`model`/`routing_rule`); di `transports/bifrost-http/lib/config.go` merge VK loop (config.go:4085) resolve `RoutingRuleName`→`RoutingRuleID` via helper mirip `resolveRoutingRuleIDs` (config.go:5102), ambigu → warn + skip entry (fail closed), sebelum hash.
   - Acceptance: schema menerima `listed_models`; config.json dengan nama rule di-resolve ke ID; ambigu ditolak; hash stabil.
   - Verify: `python docs/openapi/bundle.py` (bila relevan) + `cd transports/bifrost-http && GOWORK=off go test ./lib/ -run 'ListedModels|RoutingRuleID'`.
