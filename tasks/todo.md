@@ -97,7 +97,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 6: UI
 
-- [ ] **T13 — Types + zod + helper murni**
+- [x] **T13 — Types + zod + helper murni**
   - Acceptance: tipe sesuai shape API; helper opsi picker benar; Vitest hijau.
   - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`
   - Files: `ui/lib/types/governance.ts`, `.../virtualKeySheet.tsx`, test terkait
