@@ -1225,3 +1225,18 @@ func TestFallbackAttemptOfPrefersNestedErrorType(t *testing.T) {
 		})
 	}
 }
+
+// TestIsModelProbe pins the read path plugins use to skip a probe: false on a
+// context that never set the flag, true once the probe endpoint sets it, and
+// false again for a value of the wrong type.
+func TestIsModelProbe(t *testing.T) {
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	require.False(t, IsModelProbe(ctx), "a context that never set the flag is not a probe")
+
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	assert.True(t, IsModelProbe(ctx), "the flag set by the probe endpoint must be visible")
+
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, "yes")
+	assert.False(t, IsModelProbe(ctx), "a non-bool value must not read as a probe")
+}

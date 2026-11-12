@@ -724,6 +724,18 @@ func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	return false
 }
 
+// IsModelProbe reports whether the request is a model probe sent by the
+// /api/models/test endpoint. Plugins use it to skip logging, accounting and
+// cache writes so a probe never shows up in logs, cost or stats. Bifrost-internal
+// (set by the probe endpoint - DO NOT SET MANUALLY).
+func IsModelProbe(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	isProbe, ok := ctx.Value(schemas.BifrostContextKeyIsProbe).(bool)
+	return ok && isProbe
+}
+
 // GetResponseFields extracts the request type, provider, original model, and resolved model from the result or error.
 func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostError) (requestType schemas.RequestType, provider schemas.ModelProvider, originalModel string, resolvedModel string) {
 	if result != nil {

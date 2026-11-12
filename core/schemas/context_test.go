@@ -679,6 +679,27 @@ func TestReservedKey_AuthCredentialIsProtected(t *testing.T) {
 	}
 }
 
+// TestReservedKey_IsProbeIsProtected pins BifrostContextKeyIsProbe as reserved. The
+// probe endpoint sets it so logging/governance/semantic-cache skip the request; a
+// restricted (plugin) write must not be able to clear it and make a probe billable
+// or cacheable.
+func TestReservedKey_IsProbeIsProtected(t *testing.T) {
+	if !isReservedKey(BifrostContextKeyIsProbe) {
+		t.Fatal("BifrostContextKeyIsProbe must be a reserved key")
+	}
+
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	defer ctx.Cancel()
+
+	ctx.SetValue(BifrostContextKeyIsProbe, true)
+	ctx.BlockRestrictedWrites()
+
+	ctx.SetValue(BifrostContextKeyIsProbe, false)
+	if v := ctx.Value(BifrostContextKeyIsProbe); v != true {
+		t.Fatalf("reserved key overwritten under BlockRestrictedWrites: got %v, want true", v)
+	}
+}
+
 // TestReservedKey_NonComparableKeyDoesNotPanic guards the reserved-write path against
 // non-comparable keys. isReservedKey indexes reservedKeys, which panics on a slice/map/
 // func key unless the type is asserted first, and ClearValue reaches that guard even
