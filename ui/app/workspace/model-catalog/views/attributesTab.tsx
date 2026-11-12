@@ -13,6 +13,8 @@ import { ModelDetails, useGetModelDetailsQuery, useGetProvidersQuery } from "@/l
 import { KnownProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { ChevronLeft, ChevronRight, Edit, Search } from "lucide-react";
+
+import { ModelTestButton } from "@/components/modelTestButton";
 import { useQueryStates } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import AttributeSheet from "./attributeSheet";
@@ -252,17 +254,20 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 												)}
 											</TableCell>
 											<TableCell className="px-1 py-3">
-												<Button
-													variant="ghost"
-													size="icon"
-													className="ml-6 h-7 w-7"
-													disabled={!hasUpdateAccess}
-													onClick={() => setEditing(m)}
-													aria-label={t("modelCatalog.editAttributesFor", { name: m.name })}
-													data-testid={`model-catalog-edit-${testKey}`}
-												>
-													<Edit className="h-4 w-4" />
-												</Button>
+												<div className="ml-6 flex items-center gap-1">
+													<ModelTestButton provider={m.provider} model={m.name} mode={m.mode} className="h-7 w-7" />
+													<Button
+														variant="ghost"
+														size="icon"
+														className="h-7 w-7"
+														disabled={!hasUpdateAccess}
+														onClick={() => setEditing(m)}
+														aria-label={t("modelCatalog.editAttributesFor", { name: m.name })}
+														data-testid={`model-catalog-edit-${testKey}`}
+													>
+														<Edit className="h-4 w-4" />
+													</Button>
+												</div>
 											</TableCell>
 										</TableRow>
 									);
