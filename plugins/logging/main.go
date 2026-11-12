@@ -2016,6 +2016,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
+	// A model probe is a health check, not traffic: it must leave no pending entry,
+	// no callback notification and no log row, so it never shows up in Logs or in
+	// provider stats. PostLLMHook re-checks the flag because a probe can fail before
+	// the pre-hook's own bookkeeping is skipped by any earlier plugin.
+	if bifrost.IsModelProbe(ctx) {
+		return req, nil, nil
+	}
+
 	// Extract request ID from context
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
@@ -2179,6 +2187,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
 		p.logger.Error("request-id not found in context or is empty")
+		return result, bifrostErr, nil
+	}
+	if bifrost.IsModelProbe(ctx) {
 		return result, bifrostErr, nil
 	}
 	if kind := liveUnitKind(ctx); kind != "" {

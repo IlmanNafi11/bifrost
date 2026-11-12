@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -464,6 +466,98 @@ func TestPreLLMHookSetsAppContextFromCustomMapping(t *testing.T) {
 	}
 	if got, _ := ctx.Value(schemas.BifrostContextKeyApp).(string); got != "internal-claude-wrapper" {
 		t.Fatalf("app context = %q, want internal-claude-wrapper", got)
+	}
+}
+
+// probeTestPlugin builds a logging plugin over a real sqlite store, with a
+// subscriber that counts every entry the plugin would show to the UI.
+func probeTestPlugin(t *testing.T) (*LoggerPlugin, logstore.LogStore, *int32) {
+	t.Helper()
+	store := newTestStore(t)
+	t.Cleanup(func() { require.NoError(t, store.Close(context.Background())) })
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	var notified int32
+	plugin.SubscribeLogCallback(func(context.Context, *logstore.Log) { atomic.AddInt32(&notified, 1) })
+	return plugin, store, &notified
+}
+
+// TestProbe_LoggingPluginWritesNothing pins the probe contract at the logging
+// layer: a probe must leave no pending entry, no callback notification and no log
+// row, so it never appears in Logs or provider stats. The request is a normal chat
+// with a provider error, which is the shape that writes a minimal error entry when
+// PreLLMHook left no pending entry — that branch must be skipped too.
+func TestProbe_LoggingPluginWritesNothing(t *testing.T) {
+	plugin, store, notified := probeTestPlugin(t)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "probe-logged-request")
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Params: &schemas.ChatParameters{}},
+	}
+	if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	if _, ok := plugin.pendingLogsEntries.Load("probe-logged-request"); ok {
+		t.Fatal("a probe must not leave a pending log entry behind")
+	}
+	if got := atomic.LoadInt32(notified); got != 0 {
+		t.Fatalf("a probe notified %d log subscribers, want 0", got)
+	}
+
+	statusCode := 500
+	if _, _, err := plugin.PostLLMHook(ctx, nil, &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o-mini",
+		},
+	}); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if got := atomic.LoadInt32(notified); got != 0 {
+		t.Fatalf("a probe notified %d log subscribers, want 0", got)
+	}
+	if _, err := store.FindByID(context.Background(), "probe-logged-request"); !errors.Is(err, logstore.ErrNotFound) {
+		t.Fatalf("a probe must not write a log row, FindByID error = %v", err)
+	}
+}
+
+// BenchmarkProbePrePostHook records the cost the probe check adds to the common
+// (non-probe) path: one context read before the pending entry is stored.
+func BenchmarkProbePrePostHook(b *testing.B) {
+	store := newTestStore(b)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = plugin.Cleanup() })
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Params: &schemas.ChatParameters{}},
+	}
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-bench-probe-"+strconv.Itoa(i))
+		if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err := plugin.PostLLMHook(ctx, &schemas.BifrostResponse{}, nil); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
