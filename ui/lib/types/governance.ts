@@ -148,6 +148,10 @@ export interface VirtualKey {
 	// tell "unassigned" from "unknown". Always null in OSS, which has no users.
 	assigned_user?: { id: string; name: string; email: string } | null;
 	config_hash?: string; // Present when config is synced from config.json
+	// The block that decides what this key sees in /v1/models and may call beyond allowed_models.
+	// Absent leaves the feature off; an empty array denies every model. The list endpoint omits it,
+	// so read it from the single-key GET.
+	listed_models?: VirtualKeyListedModel[];
 }
 
 // Per-model budgets/rate-limits under a provider config, surfaced on the VK for display/edit.
@@ -168,6 +172,16 @@ export interface VirtualKeyProviderConfig {
 	rate_limit?: RateLimit;
 	model_budgets?: VirtualKeyModelBudget[]; // Per-model budgets/rate-limits under this provider
 	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
+}
+
+/**
+ * One entry of a virtual key's `listed_models` block: a model on a provider, or a routing rule by
+ * name. Exactly one form is set; the server rejects an entry that sets both or neither.
+ */
+export interface VirtualKeyListedModel {
+	provider?: string;
+	model?: string;
+	routing_rule?: string;
 }
 
 /** A virtual key's grant to call one registered A2A agent. Agents are keyed by name. */
@@ -264,6 +278,8 @@ export interface CreateVirtualKeyRequest {
 	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
 	metadata?: Record<string, string>; // Custom key/value attribution; omit for none
 	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
+	// Omit to leave the feature off; [] lists nothing, which denies every model.
+	listed_models?: VirtualKeyListedModel[];
 }
 
 export interface UpdateVirtualKeyRequest {
@@ -287,6 +303,8 @@ export interface UpdateVirtualKeyRequest {
 	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 	metadata?: Record<string, string>; // Replaces the metadata as a whole: {} clears it, omit to leave unchanged
 	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
+	// Replaces the block as a whole: [] clears it to deny-every-model, omit to leave it unchanged.
+	listed_models?: VirtualKeyListedModel[];
 }
 
 export interface BulkRotateVirtualKeysRequest {

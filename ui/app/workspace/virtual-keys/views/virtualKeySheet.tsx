@@ -55,6 +55,7 @@ import {
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
+import { validateListedModelsShape } from "@/lib/utils/listedModels";
 import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
 import { RelayGrantsEditor } from "@/components/relays/relayGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
@@ -171,6 +172,13 @@ const providerConfigSchema = z.object({
 		.optional(),
 });
 
+// One row of the listed_models block: a model on a provider, or a routing rule by name.
+const listedModelsEntrySchema = z.object({
+	provider: z.string(),
+	model: z.string(),
+	routing_rule: z.string(),
+});
+
 const mcpConfigSchema = z.object({
 	id: z.number().optional(),
 	mcp_client_name: z.string().min(1, { error: () => i18n.t("virtualKeys.mcpClientNameRequired", { ns: "models" }) }),
@@ -206,6 +214,18 @@ const formSchema = z
 			if (error) ctx.addIssue({ code: "custom", message: error });
 		}),
 		deleteAfterExpire: z.boolean(), // Only meaningful with an expiry; the daily cleanup job deletes the key once expired
+		// The key's own block deciding what it sees in /v1/models and may call beyond allowed_models.
+		// Undefined keeps the feature off; an empty array denies every model. Structural rules are
+		// checked here; the entity-aware rules (allowed_models, rule scope) need server data and run
+		// on submit instead.
+		listedModels: z
+			.array(listedModelsEntrySchema)
+			.optional()
+			.superRefine((entries, ctx) => {
+				if (!entries) return;
+				const error = validateListedModelsShape(entries);
+				if (error) ctx.addIssue({ code: "custom", message: error });
+			}),
 		// Budget
 		budgetCalendarAligned: z.boolean(),
 		budgets: z
