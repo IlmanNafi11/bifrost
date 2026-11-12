@@ -1,204 +1,226 @@
-# Implementation Plan: Test/Probe Model (`POST /api/models/test`)
+# Implementation Plan: VK-level `listed_models`
 
 ## Overview
 
-Menambahkan tombol **Test** per baris model di tiga permukaan UI (routing target, routing fallback, model catalog) yang memanggil endpoint server baru `POST /api/models/test`. Endpoint mem-probe provider sesuai **mode** model (dibaca dari katalog), mengukur **TTFT** untuk mode streaming dan **latency total** untuk mode unary, lalu mengembalikan verdict yang disajikan sebagai toast sonner. Probe disembunyikan dari log, biaya, dan stats lewat penanda konteks internal.
+Menambahkan satu blok VK-level `listed_models` yang menjadi **sumber tunggal isi `/v1/models`** untuk sebuah virtual key dan **batas model yang boleh dipanggil** (di luar daftar → 403), dengan pengecualian: nama **routing rule** yang didaftarkan boleh dipanggil dan menembus ke seluruh target+fallback rule tersebut. Blok ini berlapis di atas `allowed_models` (entri model wajib lolos `allowed_models` dulu), `nil` = fitur nonaktif (perilaku hari ini), `[]` = tolak semua. Rule yang didaftarkan divalidasi terhadap definisinya (target+fallback) — bukan bypass — dan gate provider tetap berlaku.
 
-Spec: `docs/specs/SPEC-model-test-probe.md` (disetujui). Intent: `docs/intent/model-test-probe.md`.
+Spec: `docs/specs/SPEC-vk-listed-models.md` (disetujui). Intent: `docs/intent/vk-listed-models.md`.
 
 ## Architecture Decisions
 
 | # | Decision | Rationale |
 |---|---|---|
-| A1 | Probe dijalankan **in-process** melalui `*bifrost.Bifrost` (`ChatCompletionStreamRequest`, `EmbeddingRequest`, …), bukan HTTP round-trip ke diri sendiri | `ProviderHandler` sudah memegang `client *bifrost.Bifrost`; jalur ini tetap melewati plugin pipeline, key selection, routing, dan provider converter — sama dengan request nyata, tanpa noise TCP lokal pada TTFT. Reference (`9router-go`) memakai dispatch ke handler sendiri karena tidak punya entry point core setara. |
-| A2 | Mode dibaca dari katalog: `inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel(model, provider).Mode`, fallback `"chat"` | Sumber tunggal kebenaran; `/api/models/details` memakai jalur yang sama (`providers.go:1090`). Client tidak perlu mengirim mode. |
-| A3 | Penanda `BifrostContextKeyIsProbe (bool)` + `BifrostContextKeySkipBudgetAndRateLimits (true)` di-set pada konteks probe | `IsProbe` dipakai plugin logging/semanticcache/governance untuk melewati penulisan & cache; `SkipBudgetAndRateLimits` mencegah admission menolak/mencatat probe. Keduanya key reserved yang sudah ada pola-nya. |
-| A4 | Probe **drain penuh** (baca channel sampai tutup), TTFT = waktu ke delta pertama yang membawa konten/`finish_reason` | Error di tengah stream harus tertangkap; keputusan interview #4. |
-| A5 | Timeout 60s sebagai konstanta paket, bukan config | Satu-satunya pengaman; tidak perlu variasi per instalasi. |
-| A6 | Verdict gagal → HTTP 200 + `ok:false`; endpoint hanya 4xx untuk payload invalid dan 5xx bila probe tak bisa dijalankan sama sekali | "Provider menolak" adalah hasil pengukuran, bukan kegagalan transport endpoint. |
-| A7 | `key_id` kosong → tidak men-set pin; terisi → `BifrostContextKeyAPIKeyID` di-set sebelum pemanggilan core | Pin dibaca `selectKeyFromProviderForModelWithPool` (`core/bifrost.go:11320`); `SelectedKeyID/Name` di-stamp balik oleh core (`core/bifrost.go:7492-7493`) sehingga endpoint bisa melaporkan key yang benar-benar dipakai. |
-| A8 | Tombol = ikon-only (`FlaskConical`), disabled + tooltip bila `mode` tidak probeable; `mode` diekspos di `/api/models/details` | Client harus tahu mode **sebelum** klik. Routing rules tidak butuh field ini (server yang meresolusi). |
+| A1 | `listed_models` adalah satu kolom JSON tekstual (`gorm:"type:text;serializer:json"`) pada `TableVirtualKey`, berisi `[]TableListedModelEntry{Provider string; Model string; RoutingRuleID string}` | Precedent `Metadata map[string]string` (virtualkey.go:294) memakai `serializer:json`; GORM round-trip slice-of-struct tanpa hook. Entri rule disimpan sebagai **ID** (tahan rename, tidak ambigu antar-scope — open question #2). |
+| A2 | Kolom config-only `RoutingRuleName` (`gorm:"-"`) pada entry: `config.json` menulis nama rule, server me-resolve ke `RoutingRuleID` saat load, ambigu → ditolak | Mengikuti pola `provider_key_name`→`key_id` (RoutingFallback/TableRoutingTarget) dan precedent `resolveRoutingRuleIDs` (config.go:5102). Listing menampilkan **nama** rule (dari ID), karena `id` rule di `/models` adalah nama polos (D10). |
+| A3 | Nil vs kosong dibedakan di `BeforeSave`: `nil` (absen) → NULL (fitur nonaktif); `[]` → `'[]'` (tolak semua) | D7. `Metadata` menormalisasi `[]`→nil (virtualkey.go:473-537); `listed_models` **tidak** melakukan itu — `[]` punya arti deny-by-default. Normalisasi hanya: drop entry kosong, sort deterministik untuk hash. |
+| A4 | Hash `GenerateVirtualKeyHash` menyertakan `listed_models` hanya saat non-empty, entry di-sort (provider, model, routing_rule_id) | D8/#8 → restart tidak me-reset config; non-empty-only menjaga hash lama VK yang predate kolom (pola `Metadata` di clientconfig.go:1452). |
+| A5 | `schemas.ProviderPermit` dapat `ListedModels WhiteList` (nama model, per provider); VK-level `ListedRules` (set rule ID) dibawa di `Permit`; `schemas.Access` dapat method `ModelListed(provider, model)` | Spec Code Style mencontohkan `access.ModelListed(...)` dibaca dari objek akses yang sama dengan `AllowedModels`; `ListedModels` per provider cukup karena entry model adalah `{provider, model}` dan permit sudah provider-scoped. Rule tidak provider-scoped → hidup di level permit, bukan provider permit. |
+| A6 | Gate membaca `BifrostContextKeyRequestedModel` (nama pra-rewrite), **bukan** `req.Model` post-rewrite | D12. `core/utils.go:402` (`stampRequestedRoute`) sudah men-stamp `BifrostContextKeyRequestedModel`; routing me-rewrite model di `routing/main.go:492` *sebelum* `PreLLMHook` governance membaca `req.GetRequestFields()`. |
+| A7 | Governance punya cache definisi rule sendiri (`routingrulestore.go`) yang membaca `configstore.ConfigStore.GetRoutingRules` — **bukan** `plugins/routing` (governance tidak boleh import routing: dep satu-arah) | GovFunnelMap: `plugins/governance/go.mod` hanya require core+framework. Cache dibangun saat init, di-invalidate lewat callback server `ReloadRoutingRule`/`RemoveRoutingRule` (server.go:1493/1510) yang sekarang juga memanggil governance. |
+| A8 | Scope-match rule di governance adalah helper lokal yang mereproduksi rantai scope routing (VK → user → team → customer → global) dari identifier yang sudah di-stamp `StampVirtualKeyScope` | governance tidak bisa pakai `rules/buildScopeChain` (engine.go:408). Rantai identifier sudah dimiliki governance di context; helper lokal menjaga fail-closed tanpa dep baru. |
+| A9 | Validasi entri (D3/D6): model ⊆ `allowed_models` penyedia-nya, rule ada + aktif + scope cocok, cap 100 entry — ditegakkan di **handler** VK create/update (API langsung) DAN di UI picker | Spec Testing Strategy ("Handler tests") + Success Criteria #7/#11; server-side enforcement jadi tidak divergen dari UI. |
 
 ## Dependency Graph
 
 ```
-T1 context key IsProbe (core/schemas)
- ├── T2 logging plugin skip (+benchmark)
- ├── T3 governance plugin skip (+benchmark)
- └── T4 semanticcache plugin skip
-        └── T5 endpoint + mode resolution + chat probe (slice vertikal #1)
-             ├── T6 streaming mode dispatch
-             └── T7 unary mode dispatch
-                   └── T8 mode di /api/models/details (+OpenAPI)
-                        ├── T9 RTK mutation + helper murni
-                        ├── T10 komponen tombol bersama
-                        │    ├── T11 wiring routing (target+fallback)
-                        │    └── T13 wiring catalog
-                        ├── T12 i18n (semua locale)
-                        └── T14 harness case
-                             └── T15 E2E (routing + catalog)
-T15/T11 → T16 docs (routing.mdx)
+T1 field+entry (tables) ─┬─ T6 permitForVirtualKey builds listed
+T2 migration             ─┘
+T3 hash + rdb            ─── config sync
+T4 grant schema (core)   ─┬─ T5 grant impl
+                          └─ T6 permit
+T7 routingrulestore ─────── T8 evaluateAccess gate
+T9 server invalidation ───── T7
+T8 ─ T10 filterModelsForAccess listing
+T6/T7/T8 ─ T11 handler validation
+T11 ─ T12 config schema + name→ID resolution
+T11/T12 ─ T13 UI types/zod ─ T14 editor ─ T15 sheet wiring ─ T16 i18n
+T8/T10 ─ T17 harness case
+T15 ─ T18 docs
 ```
 
-Build order: T1 → T2/T3/T4 (paralel) → T5 → T6/T7 (paralel) → T8 → T9/T10 (paralel) → T11/T12/T13 → T14 → T15 → T16.
+Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → T11 → T12 → T13 → T14 → T15 → T16 → T17 → T18.
 
 ## Task List
 
-### Phase 1: Foundation
+### Phase 1: Persistence (framework/configstore)
 
-- [x] **Task 1: Context key `IsProbe`**
-  - Description: tambah `BifrostContextKeyIsProbe` (`bool`) ke `core/schemas/bifrost.go` dengan komentar "set by the probe endpoint - DO NOT SET MANUALLY", daftarkan di `reservedKeys` (`core/schemas/context.go`), dan sediakan helper baca (`IsModelProbe(ctx)` di `core/utils.go` atau akses langsung `GetBoolFromContext`).
-  - Acceptance: key terdaftar reserved; helper mengembalikan `false` untuk konteks tanpa flag; `true` setelah `SetValue`.
-  - Verify: `cd core && GOWORK=off go test ./schemas/ -run 'TestContext|Reserved'`; `go build ./...`.
-  - Deps: None. Files: `core/schemas/bifrost.go`, `core/schemas/context.go`, `core/utils.go`, `core/schemas/context_test.go` (existing).
-  - Scope: S (4).
-
-- [x] **Task 2: Logging plugin menghormati `IsProbe`**
-  - Description: early return di awal `PreLLMHook` (tanpa pending entry, tanpa `notifyLogCallbacks`) dan `PostLLMHook` (tanpa write, termasuk cabang `!hasPending` yang menulis minimal error entry) saat `IsProbe`. Tambah `Benchmark*` di file benchmark yang ada.
-  - Acceptance: probe tidak membuat entri log/pending; request normal tidak berubah; benchmark `-benchmem` tercatat di PR body.
-  - Verify: `cd plugins/logging && go test ./... -run 'Probe|PostLLMHook'`; `go test -bench BenchmarkLLM -benchmem ./...`.
-  - Deps: T1. Files: `plugins/logging/main.go`, `plugins/logging/operations_test.go` (atau file test hook yang sudah ada).
+- [ ] **Task 1: Column `ListedModels` + entry type**
+  - Description: `type TableListedModelEntry struct { Provider, Model, RoutingRuleID string }` (semua `json:"..."`; `RoutingRuleName string \`json:"routing_rule,omitempty"\`` sebagai alias config-only `gorm:"-"` untuk nama rule) di `tables/virtualkey.go`; field `ListedModels []TableListedModelEntry \`gorm:"type:text;serializer:json" json:"listed_models,omitempty"\`` di `TableVirtualKey`; normalisasi di `BeforeSave` (drop entry kosong, **jangan** collapse `[]`→nil) + validator `ValidateVirtualKeyListedModels` (cap 100, entry model XOR rule, tidak boleh `*`).
+  - Acceptance: JSON round-trip `[]` vs `nil` terbedakan; entry rule + provider/model terbaca; `[]` tidak jadi nil.
+  - Verify: `cd framework && GOWORK=off go test ./configstore/tables/ -run ListedModels`.
+  - Deps: None. Files: `framework/configstore/tables/virtualkey.go`, `virtualkey_test.go` (existing).
   - Scope: S (2).
 
-- [x] **Task 3: Governance plugin menghormati `IsProbe`**
-  - Description: early return di `PostLLMHook` sebelum blok koleksi limit & `tracker.UpdateUsage` (tidak ada cost/budget/rate-limit/request count). Pre-hook tetap berjalan agar akses & key selection diputuskan seperti biasa. Tambah benchmark.
-  - Acceptance: probe tidak menaikkan budget/rate-limit/token; akses model tetap divalidasi; benchmark tercatat.
-  - Verify: `cd plugins/governance && go test ./... -run 'Accounting|Probe'`; `go test -bench . -benchmem ./... -run '^$'`.
-  - Deps: T1. Files: `plugins/governance/main.go`, `plugins/governance/accounting_test.go`.
-  - Scope: S (2).
-
-- [x] **Task 4: Semantic cache plugin menghormati `IsProbe`**
-  - Description: early return di `PreLLMHook` (tanpa lookup/short-circuit) dan `PostLLMHook` (tanpa cache write) saat `IsProbe`, sehingga verdict tidak pernah berasal dari cache.
-  - Acceptance: probe tidak membaca cache (stub store tidak dipanggil) dan tidak menulis cache.
-  - Verify: `cd plugins/semanticcache && go test ./... -run 'Probe|Core'`.
-  - Deps: T1. Files: `plugins/semanticcache/main.go`, `plugins/semanticcache/plugin_core_test.go`.
-  - Scope: S (2).
-
-### Checkpoint: Foundation
-- [x] `cd core && go build ./...` dan ketiga plugin kompilasi + test hijau
-- [ ] Review dengan human sebelum endpoint ditulis
-
-### Phase 2: Endpoint (slice vertikal)
-
-- [ ] **Task 5: `POST /api/models/test` — route, contract, chat probe**
-  - Description: route baru di `ProviderHandler.RegisterRoutes`; tipe request/response; validasi (400); resolusi mode (A2); runner probe chat streaming (`max_tokens:16`, prompt `"hi"`, `stream`), TTFT dari delta pertama, drain penuh, timeout 60s, pin `key_id`, baca `SelectedKeyID/Name`; set `IsProbe` + `SkipBudgetAndRateLimits`. Response `{ok, mode, ttft_ms?, total_ms, status?, key_id?, key_name?, note?, error?}`.
-  - Acceptance: chat probe sukses → `ok:true` + `ttft_ms` + `total_ms`; provider error → `ok:false` + error; timeout → `ok:false` + `timeout setelah 60s`; body tanpa model/provider → 400.
-  - Verify: `make test` (transports) atau `cd transports/bifrost-http && go test ./handlers/ -run TestModelProbe`.
-  - Deps: T1-T4. Files: `transports/bifrost-http/handlers/providers.go`, `transports/bifrost-http/handlers/providers_test.go`.
-  - Scope: M (2).
-
-- [ ] **Task 6: Streaming mode dispatch**
-  - Description: jalur probe untuk `responses`, `completion`, `audio_speech`, `audio_transcription`, `image_generation`, `image_edit` — payload minimal per mode, TTFT + `total_ms`, drain penuh. Mode tak dikenal/tak didukung → 400 `mode not supported for probe`.
-  - Acceptance: tiap mode memanggil method core yang benar (dispatcher teruji dengan stub); mode unary tidak pernah diberi `ttft_ms`.
-  - Verify: `cd transports/bifrost-http && go test ./handlers/ -run TestModelProbeModeDispatch`.
-  - Deps: T5. Files: `transports/bifrost-http/handlers/providers.go` (atau file probe terpisah), `providers_test.go`.
-  - Scope: M (2).
-
-- [ ] **Task 7: Unary mode dispatch**
-  - Description: `embedding`, `rerank`, `decisions`, `ocr`, `video_generation` → satu panggilan core, `total_ms` saja.
-  - Acceptance: tiap mode memanggil method core yang benar; response tanpa `ttft_ms`; `video_generation` melaporkan pembuatan job sebagai sukses.
-  - Verify: `cd transports/bifrost-http && go test ./handlers/ -run TestModelProbeModeDispatch`.
-  - Deps: T5. Files: `transports/bifrost-http/handlers/providers.go`, `providers_test.go`.
-  - Scope: M (2).
-
-### Checkpoint: Endpoint
-- [ ] Semua mode terpetakan; `go test ./handlers/` hijau
-- [ ] Manual: `curl -X POST localhost:<port>/api/models/test -d '{"provider":"openai","model":"gpt-4o-mini"}'` mengembalikan verdict; **tidak ada baris baru** di Logs dan `total_requests` tidak bertambah
-
-### Phase 3: Data exposure + UI
-
-- [ ] **Task 8: `mode` pada `/api/models/details`**
-  - Description: `ModelDetailsResponse.Mode string \`json:"mode,omitempty"\`` diisi dari capabilities (fallback `chat`); update OpenAPI (`paths/management/providers.yaml` + `schemas/management/providers.yaml`), `ModelDetails.mode?` di `ui/lib/store/apis/providersApi.ts`.
-  - Acceptance: respons memuat `mode`; baris tanpa datasheet → `chat`; OpenAPI spec memuat field baru; `python docs/openapi/bundle.py` tetap jalan.
-  - Verify: `cd transports/bifrost-http && go test ./handlers/ -run TestListModelDetails`; `cd ui && npm run typecheck`.
-  - Deps: T5. Files: `handlers/providers.go`, `handlers/providers_test.go`, `docs/openapi/paths/management/providers.yaml`, `docs/openapi/schemas/management/providers.yaml`, `ui/lib/store/apis/providersApi.ts` (5).
-  - Scope: M (5).
-
-- [ ] **Task 9: RTK mutation + helper murni**
-  - Description: `testModel` mutation (`POST /models/test`, body `{provider, model, key_id?}`) + tipe `ModelTestResponse`; helper murni: `isModeProbeable(mode)`, `formatModelProbeToast(result)` → `{title, description, variant}`.
-  - Acceptance: helper memetakan streaming→`TTFT … · total …`, unary→`Latency …`, gagal→pesan error; `key auto` bila `key_name` kosong; mode non-probeable terdeteksi.
-  - Verify: `cd ui && npx vitest run lib/utils/modelProbe.test.ts`.
-  - Deps: T5/T8 (shape). Files: `ui/lib/store/apis/providersApi.ts`, `ui/lib/types/providers.ts` (atau lokasi tipe yang sudah ada), `ui/lib/utils/modelProbe.ts`, `ui/lib/utils/modelProbe.test.ts` (4).
-  - Scope: S (4).
-
-- [ ] **Task 10: Komponen tombol Test bersama**
-  - Description: komponen/hook yang merender tombol ikon-only (`FlaskConical`) dengan spinner + `disabled` saat probe berjalan, `aria-label`/tooltip, dan memanggil mutation; satu instance per baris dengan state per-bar (bukan global) sehingga multi-probe jalan.
-  - Acceptance: klik → disabled+spinner baris itu; baris lain tetap aktif; toast muncul saat selesai; `data-testid` bisa dikonfigurasi lewat prop.
-  - Verify: `cd ui && npx vitest run components/modelTest/modelTestButton.test.tsx`; `npm run typecheck`.
-  - Deps: T9. Files: `ui/components/modelTest/modelTestButton.tsx`, `ui/components/modelTest/modelTestButton.test.tsx` (2).
-  - Scope: S (2).
-
-- [ ] **Task 11: Wiring routing rules (target + fallback)**
-  - Description: tombol di `TargetRow` sebelum `X` dan di `FallbackRow` sebelum Trash; kirim `{provider, model, key_id}` dari state baris; disabled bila provider/model kosong.
-  - Acceptance: urutan kontrol sesuai spec; tombol tidak memulai drag fallback; klik mengirim key yang dipilih baris itu.
-  - Verify: `cd ui && npx vitest run app/workspace/routing-rules/views/routingFallbacksField.test.tsx`; `npm run typecheck`.
-  - Deps: T10. Files: `ui/app/workspace/routing-rules/views/routingRuleSheet.tsx`, `ui/app/workspace/routing-rules/views/routingFallbacksField.tsx`, `ui/app/workspace/routing-rules/views/routingFallbacksField.test.tsx` (3).
-  - Scope: S (3).
-
-- [ ] **Task 12: i18n keys di semua locale**
-  - Description: key `modelTest.*` (title/description/tooltip/aria/`keyAuto`/`modeUnsupported`/`timeout`) dan `routing.testModel`, ditambahkan ke `en` + 11 locale lain dengan terjemahan nyata (placeholder identik).
-  - Acceptance: `npm run i18n:check` exit 0; tidak ada string hardcoded baru.
-  - Verify: `cd ui && npm run i18n:check`.
-  - Deps: T10 (nama key final). Files: `ui/locales/*/models.json` (12 berkas, mekanis satu konsern).
-  - Scope: M (12, mekanis).
-
-- [ ] **Task 13: Wiring model catalog + gating mode**
-  - Description: tombol Test di sel aksi sebelum Edit; `disabled` + tooltip untuk mode non-probeable; gerbang RBAC `ModelProvider/Update` sama dengan Edit.
-  - Acceptance: tombol tampil `test|edit`; disabled untuk mode tak didukung; user tanpa `Update` melihat disabled; probe memakai auto-select key.
-  - Verify: `cd ui && npx vitest run app/workspace/model-catalog`; `npm run typecheck`; `npm run build`.
-  - Deps: T8, T10. Files: `ui/app/workspace/model-catalog/views/attributesTab.tsx`, `.../attributesTab.test.tsx` (baru bila belum ada).
-  - Scope: S (2).
-
-### Checkpoint: UI
-- [ ] `npm run typecheck`, `npm run lint`, `npm run i18n:check`, `npm run build` hijau
-- [ ] Manual di `make dev`: tiga permukaan menampilkan tombol pada posisi yang benar; dua baris berbeda diprobe bersamaan dan toast muncul sesuai urutan selesai
-
-### Phase 4: Verification & Docs
-
-- [ ] **Task 14: Harness case (`model probe`)**
-  - Description: case baru di `tests/e2e/api/collections/provider-harness.json` (provider live) yang memanggil `POST /api/models/test` untuk satu model chat, meng-assert status 200, `ok:true`, `ttft_ms > 0`, `mode == "chat"`, dan bahwa baris tidak muncul di log stats. Insersi surgical (splice), bukan reserialize.
-  - Acceptance: augment + filter script lulus; case red sebelum perubahan, green sesudah (validasi struktural).
-  - Verify: `node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/harness-augmented.json` lalu `filter-collection.mjs --feature "model probe"`.
-  - Deps: T5, T6. Files: `tests/e2e/api/collections/provider-harness.json`, `tmp/` (artefak).
+- [ ] **Task 2: Migration `add_virtual_key_listed_models_column`**
+  - Description: `migrationAddVirtualKeyListedModelsColumn` mirroring `migrationAddVirtualKeyMetadataColumn` (migrations.go:16327) — `addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "ListedModels")` via `setMigrationLockTimeout`; registration di akhir `configstoreMigrationSteps` (setelah baris 592, ID baru unik); Rollback non-rollbackable.
+  - Acceptance: migration ter-register dengan ID baru; SQLite + Postgres column-exists idempotent; `make test-framework` migration test hijau.
+  - Verify: `make test-framework TESTCASE=Migration` (atau `cd framework && GOWORK=off go test ./configstore/ -run Migration`).
+  - Deps: T1. Files: `framework/configstore/migrations.go`.
   - Scope: S (1).
 
-- [ ] **Task 15: E2E Playwright (routing + catalog)**
-  - Description: spec yang memverifikasi posisi/testid tombol, disabled saat model kosong, dan toast pada klik; tambah page-object accessor di `routing-rules.page.ts`.
-  - Acceptance: `make run-e2e FLOW=routing-rules` dan `FLOW=model-catalog` hijau.
-  - Deps: T11, T13. Files: `tests/e2e/features/routing-rules/pages/routing-rules.page.ts`, `tests/e2e/features/routing-rules/routing-rules.spec.ts`, `tests/e2e/features/model-catalog/model-catalog.spec.ts` (3).
+- [ ] **Task 3: Hash + `UpdateVirtualKey` allowlist**
+  - Description: `GenerateVirtualKeyHash` menulis `listed_models` hanya saat non-empty, entry di-sort + JSON-deterministik (pola `metadata` clientconfig.go:1452-1477); `UpdateVirtualKey` (rdb.go:4589) conditionally append `"listed_models"` ke `columns` bila non-nil (pola `metadata` rdb.go:4630-4634 pointer-decide).
+  - Acceptance: hash berubah saat `listed_models` berubah, stabil saat di-restart; VK tanpa `listed_models` hash-nya tidak berubah; `UpdateVirtualKey` dengan `ListedModels:nil` mempertahankan nilai stored.
+  - Verify: `cd framework && GOWORK=off go test ./configstore/ -run 'VirtualKeyHash|ListedModels'`.
+  - Deps: T1. Files: `framework/configstore/clientconfig.go`, `framework/configstore/rdb.go`, `clientconfig_test.go`/`rdb_test.go`.
+  - Scope: S (3).
+
+### Checkpoint: Persistence
+- [ ] `go build ./core/... ./framework/...` dan test configstore hijau
+- [ ] **Review human — migration baru (spec "Ask first")**
+
+### Phase 2: Grant (core/schemas + framework/grant)
+
+- [ ] **Task 4: `schemas` — `ListedModels`/`ListedRules` + `Access.ModelListed`**
+  - Description: `ProviderPermit.ListedModels WhiteList` (nama model; nil=nonaktif, []=deny-all) di `core/schemas/grant.go`; `Permit` dapat method `ListedRules() []string` (rule ID, VK-level); `Access` dapat `ModelListed(provider, model) bool` — true bila VK tanpa blok (nil), atau model ada di `ListedModels` provider itu.
+  - Acceptance: kompilasi; kontrak interface terdokumentasi (nil vs [] semantics).
+  - Verify: `cd core && GOWORK=off go build ./...` + unit kecil di `framework/grant` (T5).
+  - Deps: None. Files: `core/schemas/grant.go`.
+  - Scope: S (1). *Ask first: kontrak interface.*
+
+- [ ] **Task 5: `framework/grant` implement `ModelListed`**
+  - Description: `NewPermit`/`NewAccess` membawa `ListedModels`/`ListedRules`; `cloneProviderPermits` deep-copy `ListedModels`; `Access.ModelListed` membaca union allowed (nil = fitur nonaktif → true; satu permit men-list narrows). Tambah `WithListedRules(...)` permit option.
+  - Acceptance: `ModelListed` true untuk VK nil, untuk `[]` hanya rule (bukan model) yang lolos di level ini; deep-copy tidak alias.
+  - Verify: `cd framework && GOWORK=off go test ./grant/ -run 'Listed|ModelListed'`.
+  - Deps: T4. Files: `framework/grant/permit.go`, `framework/grant/access.go`, `permit_test.go`/`access_test.go`.
+  - Scope: S (3).
+
+### Phase 3: Governance gate + rule cache (plugins/governance)
+
+- [ ] **Task 6: `permitForVirtualKey` membangun listed**
+  - Description: dari `TableVirtualKey.ListedModels`, bangun `ProviderPermit.ListedModels` per provider (entry model) dan `WithListedRules(ruleIDs)` di `grant.NewPermit` (store.go:1528). Entry model di luar provider permit → skip (fail closed; validasi handler sudah menolak, ini jaring kedua).
+  - Acceptance: permit provider B membawa `ListedModels=["gpt-5.4"]`; permit membawa `ListedRules` rule IDs; VK tanpa `listed_models` tetap nil.
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run ListedModels`.
+  - Deps: T4, T5. Files: `plugins/governance/store.go`, `permits_test.go`.
+  - Scope: S (2).
+
+- [ ] **Task 7: `routingrulestore.go` — cache definisi rule**
+  - Description: `RoutingRuleStore` membaca `configstore.ConfigStore.GetRoutingRules` saat init, index by ID → `{Name, Targets, Fallbacks, Scope, ScopeID, Enabled}`; method `AllowsRequest(ctx, requestedRuleName, provider, model)` yang: resolve rule by **name** (listing/entry memakai nama call, D10), cek aktif + scope cocok (rantai VK→user→team→customer→global dari stamp context), cek model final `provider`/`model` ∈ definisi rule (target+fallback through `RoutingFallback.Resolved()`, fallback ke provider/model); method `Reload(id)`/`Remove(id)` untuk invalidation; fail closed saat rule hilang.
+  - Acceptance: rule aktif+scope cocok+model ∈ definisi → allowed; rule nonaktif/scope lain/hapus → false; invalidation sebelum request berikutnya (test cache).
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run RoutingRuleStore`.
+  - Deps: None (hanya configstore). Files: `plugins/governance/routingrulestore.go` (baru), `routingrulestore_test.go` (baru).
+  - Scope: M (2).
+
+- [ ] **Task 8: `evaluateAccess` gate requested-name vs listed**
+  - Description: di `resolver.go` (dalam `evaluateAccess`, setelah model gate ba…sekaligus sebelum/di samping `IsModelAllowed` block resolver.go:166): baca `requested := GetStringFromContext(ctx, BifrostContextKeyRequestedModel)`; bila `requested != "" && !access.ModelListed(provider, requested)` && rule-set tidak allow → `DecisionModelBlocked` ("Model '%s' is not listed for this virtual key"). Model final tetap diperiksa terhadap `allowed_models`/definisi rule (D12/D4); provider gate tetap berjalan (D5). `IsProbe` tidak men-skip gate ini (probe pun harus listed).
+  - Acceptance: VK nil → perilaku lama; `[]` → model non-rule ditolak; rule teregister meneruskan ke target/fallback meski target tidak di allowed/listed; requested-name (bukan post-rewrite) yang diuji.
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'ListedModels|ModelBlocked|EvaluateRequest'`.
+  - Deps: T6, T7. Files: `plugins/governance/resolver.go`, `resolver_test.go`.
+  - Scope: M (2).
+
+- [ ] **Task 9: Wiring invalidation di server**
+  - Description: `ReloadRoutingRule`/`RemoveRoutingRule` (server.go:1493/1510) menambahkan panggilan ke governance store (via `getGovernancePlugin().GetGovernanceStore()` atau method baru `BaseGovernancePlugin`), memanggil `RoutingRuleStore.Reload/Remove` sebelum/bersamaan routing plugin.
+  - Acceptance: edit/hapus rule memicu refresh cache governance; tanpa governance plugin → error tidak menelan routing path (warn).
+  - Verify: `cd transports/bifrost-http && GOWORK=off go test ./server/ -run 'RoutingRule'` (atau test handler routing).
+  - Deps: T7. Files: `transports/bifrost-http/server/server.go`, `routing_test.go`.
+  - Scope: S (2).
+
+### Phase 4: Listing
+
+- [ ] **Task 10: `filterModelsForAccess` listed-aware + entri rule**
+  - Description: `filterModelsForAccess` (utils.go:134) — saat access membawa `ListedModels`, daftar berisi tepat: entry model yang ada di `ListedModels` (prefix `provider/model`, D10) + entry rule (nama polos, dari `ListedRules` yang aktif + scope cocok). Saat access nil (no listing) → perilaku lama. Wiring `PostLLMHook` (main.go:1639) tidak berubah — lewat access yang sama.
+  - Acceptance: `/v1/models` VK ber-listed = persis entri + rule; rule nonaktif/scope lain hilang; dashboard `/api/models` tidak terpengaruh (D9, tidak lewat jalur ini).
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'FilterModelsForAccess|ListedModels'`.
+  - Deps: T7, T8. Files: `plugins/governance/utils.go`, `permits_test.go`.
+  - Scope: M (2).
+
+### Checkpoint: Backend gate
+- [ ] `make test-governance` dan `make test-plugins` hijau
+- [ ] Manual: VK ber-listed memanggil non-listed → 403; `/v1/models` listing tepat
+
+### Phase 5: Handler + config
+
+- [ ] **Task 11: Validasi `listed_models` di handler VK create/update**
+  - Description: `CreateVirtualKeyRequest`/`UpdateVirtualKeyRequest` dapat field `ListedModels []ListedModelEntryBody{Provider, Model, RoutingRule}`; validasi pra-transaksi di `createVirtualKey` (governance.go:2160) & `updateVirtualKey` (2610): model ⊆ `allowed_models` provider-nya (tidak dikenal → 400), rule ada + scope cocok (dari `GetRoutingRules`), cap 100 → 400, `*` ditolak. Map ke `TableListedModelEntry` (rule name → ID di handler, bukan config load).
+  - Acceptance: create/update dengan entry valid diterima; model di luar `allowed_models`/tidak dikenal → 400; rule tidak ada/scope tidak cocok → 400; >100 → 400; `GET /api/models` (dashboard) tetap penuh.
+  - Verify: `cd transports/bifrost-http && GOWORK=off go test ./handlers/ -run 'VirtualKey|ListedModels'`.
+  - Deps: T8, T10. Files: `transports/bifrost-http/handlers/governance.go`, `governance_test.go`.
   - Scope: M (3).
 
-- [ ] **Task 16: Docs**
-  - Description: tambahkan paragraf tombol Test + arti TTFT/Latency di `docs/features/governance/routing.mdx`; sebutkan probe tidak tercatat di logs/biaya.
-  - Acceptance: contoh konsisten dengan perilaku; tidak ada contoh config baru (tidak ada config).
-  - Verify: review manual + `docs/openapi/spec_invariants_test.py` bila menyentuh OpenAPI.
-  - Deps: T11, T13. Files: `docs/features/governance/routing.mdx` (1).
+- [ ] **Task 12: `config.schema.json` + name→ID di config load**
+  - Description: `virtual_keys.items.properties.listed_models` di `transports/config.schema.json` (items dengan `provider`/`model`/`routing_rule`); di `transports/bifrost-http/lib/config.go` merge VK loop (config.go:4085) resolve `RoutingRuleName`→`RoutingRuleID` via helper mirip `resolveRoutingRuleIDs` (config.go:5102), ambigu → warn + skip entry (fail closed), sebelum hash.
+  - Acceptance: schema menerima `listed_models`; config.json dengan nama rule di-resolve ke ID; ambigu ditolak; hash stabil.
+  - Verify: `python docs/openapi/bundle.py` (bila relevan) + `cd transports/bifrost-http && GOWORK=off go test ./lib/ -run 'ListedModels|RoutingRuleID'`.
+  - Deps: T11. Files: `transports/config.schema.json`, `transports/bifrost-http/lib/config.go`, `config_test.go`.
+  - Scope: M (3).
+
+### Checkpoint: Config end-to-end
+- [ ] config.json → DB → permit → listing round-trip manual
+
+### Phase 6: UI
+
+- [ ] **Task 13: Types + zod + helper murni**
+  - Description: `ListedModelsEntry` di `ui/lib/types/governance.ts`; `VirtualKey` + create/update request dapat `listed_models`; validator zod lokal di `virtualKeySheet.tsx`; helper murni `listedModelsOptionSource(providerConfigs, rules)` untuk picker (hanya model dari allowed + rule scope cocok).
+  - Acceptance: tipe sesuai shape API; helper mengembalikan opsi yang benar dari allowed+rule; Vitest murni hijau.
+  - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`.
+  - Deps: T11 (shape). Files: `ui/lib/types/governance.ts`, `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`, test terkait.
+  - Scope: S (3).
+
+- [ ] **Task 14: `listedModelsEditor.tsx`**
+  - Description: editor daftar entry `{provider, model}` atau rule, selector di atas + baris removable (pola `relayGrantsEditor`/`agentGrantsEditor`); picker model dari `allowed_models` + rule scope-cocok; testid `vk-listed-models-add`, `vk-listed-models-remove-${i}`; cap 100.
+  - Acceptance: baris add/remove; picker tidak menawarkan model di luar allowed; testid sesuai spec; Vitest komponen hijau.
+  - Verify: `cd ui && npx vitest run components/ui/listedModelsEditor`; `npm run typecheck`.
+  - Deps: T13. Files: `ui/components/ui/listedModelsEditor.tsx` (baru), `listedModelsEditor.test.tsx` (baru).
+  - Scope: M (2).
+
+- [ ] **Task 15: Wire ke `virtualKeySheet.tsx`**
+  - Description: blok "Allowed listed models" di atas/setelah Provider Configurations (gated `!isGovernedByOwnerProfile`), map ke `form` state, serialize pada create/update request.
+  - Acceptance: blok tampil; submit mengirim `listed_models`; nilai edit ter-load.
+  - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`; `npm run typecheck`.
+  - Deps: T14. Files: `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`.
+  - Scope: S (1).
+
+- [ ] **Task 16: i18n semua locale**
+  - Description: key `listedModels.*` (title/tooltip/add/remove/empty/validation) di namespace `governance`, ditambah ke `en` + 11 locale lain dengan terjemahan nyata.
+  - Acceptance: `npm run i18n:check` exit 0; tidak ada string hardcoded baru.
+  - Verify: `cd ui && npm run i18n:check`.
+  - Deps: T14 (nama key final). Files: `ui/locales/*/governance.json` (12).
+  - Scope: M (12, mekanis).
+
+### Checkpoint: UI
+- [ ] `npm run typecheck` + `npm run lint` + `npm run i18n:check` + `npm run build` hijau
+
+### Phase 7: Verification & Docs
+
+- [ ] **Task 17: Harness case (`listed models`)**
+  - Description: case di `provider-harness.json` — `/v1/models` dengan VK ber-`listed_models` mengembalikan persis entri (D10), panggilan model non-listed → 403, `coding` → rule jalan. Insersi surgical (splice).
+  - Acceptance: augment + filter lulus; case red pre-change, green post (validasi struktural).
+  - Verify: `node tests/e2e/api/runners/augment-provider-harness.mjs ...` lalu `filter-collection.mjs --feature "listed models"`.
+  - Deps: T8, T10. Files: `tests/e2e/api/collections/provider-harness.json`, `tmp/` (artefak).
+  - Scope: S (1).
+
+- [ ] **Task 18: Docs**
+  - Description: paragraf `listed_models` di `docs/deployment-guides/config-json/governance.mdx` (bentuk, nil vs [], entri model vs rule, cap 100, nama→ID di load).
+  - Acceptance: contoh konsisten; tidak ada config baru yang tidak didokumentasikan.
+  - Verify: review manual.
+  - Deps: T15. Files: `docs/deployment-guides/config-json/governance.mdx`.
   - Scope: XS (1).
 
 ### Checkpoint: Complete
-- [ ] Semua Success Criteria di spec terpenuhi
-- [ ] `make test`, `make test-plugins`, `make test-governance`, UI checks hijau
+- [ ] Semua Success Criteria spec (1-12) terpenuhi
+- [ ] `make test`, `make test-framework`, `make test-plugins`, `make test-governance`, UI checks hijau
 - [ ] Siap review
 
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Probe bocor ke log/stats biaya karena satu jalur plugin terlewat (mis. cabang `!hasPending` di logging) | Med | Unit test per plugin yang meng-assert tidak ada write; manual check di checkpoint endpoint (curl → Logs kosong). |
-| Payload non-chat tidak valid untuk sebagian provider (image size, WAV, OCR document) → false negative | Med | Probe dianggap sukses bila provider menerima dan menjawab; payload diverifikasi per mode terhadap provider nyata saat implementasi (open question O4 di spec). |
-| Probe mahal/lama pada model reasoning (drain penuh, `max_tokens` kecil tapi chain-of-thought panjang) | Med | `max_tokens:16` + timeout 60s; `finish_reason=length` reasoning-only dianggap sukses dengan `note` (mengikuti alasan reference issue #3010). |
-| `SelectedKeyID` kosong saat governance tidak aktif → toast tanpa key | Low | Fallback teks `key auto` (sudah di spec). |
-| Penanda `IsProbe` tidak terbaca karena `BlockRestrictedWrites` (key reserved) | Low | Di-set pada konteks milik handler sebelum pemanggilan core (setara `SetFallbackPinnedAPIKeyID`); key didaftarkan reserved agar konsisten. |
-| Mode ganda per `(provider, model)` (chat vs responses) di katalog | Low | Baris listing unik per (provider, model); mode diambil dari entry yang sama dengan yang dipakai `listModelDetails`. |
+| Rule cache governance stale vs routing (rule diedit tapi hanya satu yang di-invalidate) | High | T9 menambahkan panggilan governance di method server yang sama yang sudah dipanggil routing handler; test invalidation (T7) fail-closed saat rule hilang. |
+| Scope-match governance divergen dari routing (rantai scope digandakan) | Med | Helper lokal memakai identifier yang sudah di-stamp `StampVirtualKeyScope`; unit test eksplisit per level scope (VK/user/team/customer/global). |
+| `[]` vs `nil` tertukar di JSON round-trip | Med | T1 test round-trip eksplisit; `BeforeSave` tidak collapse `[]`; hash non-empty-only. |
+| Gate melewat `allowed_models` (model listed tapi provider config-nya sempit) | Med | D3/D12: `ModelListed` hanya lapisan kedua — `IsModelAllowed` tetap berjalan di evaluateAccess (resolver.go:166); validasi handler menolak model di luar `allowed_models`. |
+| Rule di `listed_models` dihapus → `/models` masih menampilkan nama (stale) | High | T7 cache + T9 invalidation; listing T10 men-drop rule nonaktif/scope tak cocok (D6). |
+| `UpdateVirtualKey` allowlist tidak menyertakan kolom → config sync drift permanen | High | T3 conditional-append seperti `metadata`; drift test (Success #8). |
+| Interface `Access`/`Permit` berubah → implementasi/mocks enterprise break | Med | T4 minimal (satu method baru + field); "Ask first" dijadwalkan; kompilasi lintas modul (`go build ./...`) sebelum merge. |
 
 ## Parallelization Opportunities
 
-- **Aman paralel:** T2/T3/T4 (plugin berbeda, modul `go.mod` berbeda); T6/T7 setelah T5; T9/T10 setelah shape response; T12 (i18n) setelah nama key final.
-- **Harus sekuensial:** T1 (semua plugin membaca key), T5 (kontrak endpoint), T8 (field response).
-- **Perlu koordinasi:** T5 menentukan bentuk `ModelTestResponse` yang dipakai T9/T10 — bentuk itu ditetapkan di plan ini, jadi T9 bisa dimulai paralel dengan T6/T7 selama field tidak berubah.
+- **Aman paralel:** T2/T3 setelah T1; T5 setelah T4; T12 (config) setelah T11; T16 (i18n) setelah nama key final.
+- **Harus sekuensial:** T4→T5→T6→T8 (kontrak grant), T7→T8→T10 (gate→listing), T13→T14→T15 (UI).
+- **Perlu koordinasi:** T8 bentuk `ModelListed` dipakai T5/T6 — bentuk itu ditetapkan di plan ini (A5), sehingga T5 bisa mulai paralel dengan T7 selama field tidak berubah.
 
 ## Open Questions
 
-- **Q1 (dari spec O4):** payload per mode non-chat per provider diverifikasi saat implementasi; bila satu mode terbukti tidak punya payload universal, mode itu ditandai tidak probeable (`isModeProbeable` di UI + 400 di server) dan dicatat di PR body. Tidak memblokir task lain.
-- **Q2:** apakah `image_edit`/`image_variation` perlu disertakan sekarang? Keduanya butuh input gambar; bila payload universal tidak ada, ikuti Q1.
-- **Q3:** apakah benchmark plugin (T2/T3) wajib dijalankan sebelum-sesudah pada commit terpisah agar angka `-benchmem` di PR body bisa dibandingkan? Rekomendasi: ya, jalankan sekali di commit `main` sebelum perubahan, sekali sesudah.
+- **Q1:** `PendingResolution` — apakah `ListedRules` dikembalikan lewat method `Permit.ListedRules()` (rekomendasi A5) atau field di `ProviderPermit`. Diputuskan di T4 dengan kompilasi silang; tidak mengubah perilaku eksternal.
+- **Q2:** Apakah rule-scope validation saat request memakai `routingRuleNameKey` (scope, scope_id) untuk resolve nama→rule (ambigu antar-scope)? Rekomendasi: ya — entry disimpan sebagai ID (A1), nama hanya dipakai config.json + listing, jadi ambiguitas resolve-once di config load (T12).
+- **Q3:** Apakah `video_generation`/passthrough/batch bodyModels perlu di-list-gate? D8 menyebut "semua jalur inference yang membawa model name, termasuk bodyModels batch/passthrough" — gate `evaluateAccess` sudah dijalankan per body model (main.go:1229/1256), jadi T8 otomatis berlaku. Dicatat, tidak ada work ekstra di luar pastikan test menutupi satu body-model case.

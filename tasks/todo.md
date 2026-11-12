@@ -1,125 +1,144 @@
-# Todo: Test/Probe Model (`POST /api/models/test`)
+# Todo: VK-level `listed_models`
 
-Spec: `docs/specs/SPEC-model-test-probe.md` · Plan: `tasks/plan.md`
+Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
-## Phase 1: Foundation
+## Phase 1: Persistence (framework/configstore)
 
-- [x] **T1 — Context key `IsProbe`**
-  - Acceptance: `BifrostContextKeyIsProbe` ada di `core/schemas/bifrost.go`, terdaftar di `reservedKeys`, helper baca mengembalikan false tanpa set / true sesudahnya.
-  - Verify: `cd core && GOWORK=off go test ./schemas/ -run 'TestContext'`; `go build ./...`
-  - Files: `core/schemas/bifrost.go`, `core/schemas/context.go`, `core/utils.go`, `core/schemas/context_test.go`
+- [ ] **T1 — Column `ListedModels` + entry type**
+  - Acceptance: JSON round-trip membedakan `[]` vs `nil`; entry rule + provider/model terbaca; `[]` tidak di-collapse jadi nil.
+  - Verify: `cd framework && GOWORK=off go test ./configstore/tables/ -run ListedModels`
+  - Files: `framework/configstore/tables/virtualkey.go`, `virtualkey_test.go`
   - Deps: none · Size: S
 
-- [x] **T2 — Logging plugin skip probe**
-  - Acceptance: probe tidak membuat pending entry, tidak menulis log, termasuk cabang `!hasPending`; request normal tidak berubah; benchmark `-benchmem` tercatat.
-  - Verify: `cd plugins/logging && go test ./... -run 'Probe|PostLLMHook'`; benchmark.
-  - Files: `plugins/logging/main.go`, `plugins/logging/operations_test.go`
+- [ ] **T2 — Migration `add_virtual_key_listed_models_column`**
+  - Acceptance: migration ter-register ID baru; idempotent SQLite/Postgres; migration test hijau.
+  - Verify: `make test-framework` (migration)
+  - Files: `framework/configstore/migrations.go`
   - Deps: T1 · Size: S
 
-- [x] **T3 — Governance plugin skip probe**
-  - Acceptance: tidak ada cost/budget/rate-limit/request-count untuk probe; akses & key selection tetap berjalan; benchmark tercatat.
-  - Verify: `cd plugins/governance && go test ./... -run 'Accounting|Probe'`; benchmark.
-  - Files: `plugins/governance/main.go`, `plugins/governance/accounting_test.go`
+- [ ] **T3 — Hash + `UpdateVirtualKey` allowlist**
+  - Acceptance: hash berubah saat listed berubah; stabil restart; tanpa listed hash tak berubah; `ListedModels:nil` preserves stored.
+  - Verify: `cd framework && GOWORK=off go test ./configstore/ -run 'VirtualKeyHash|ListedModels'`
+  - Files: `framework/configstore/clientconfig.go`, `framework/configstore/rdb.go`, test terkait
   - Deps: T1 · Size: S
 
-- [x] **T4 — Semantic cache skip probe**
-  - Acceptance: probe tidak lookup cache (tidak short-circuit) dan tidak menulis cache.
-  - Verify: `cd plugins/semanticcache && go test ./... -run 'Probe|Core'`
-  - Files: `plugins/semanticcache/main.go`, `plugins/semanticcache/plugin_core_test.go`
-  - Deps: T1 · Size: S
+### Checkpoint: Persistence
+- [ ] build + test configstore hijau
+- [ ] Review human — migration baru (wajib)
 
-### Checkpoint: Foundation
-- [x] Build core + 3 modul plugin hijau
-- [x] Review human — endpoint ditulis, harness case pin hasil + log tersembunyi
+## Phase 2: Grant (core/schemas + framework/grant)
 
-## Phase 2: Endpoint
+- [ ] **T4 — `schemas` kontrak listed**
+  - Acceptance: `ProviderPermit.ListedModels`, `Permit.ListedRules()`, `Access.ModelListed()` terdokumentasi; kompilasi.
+  - Verify: `cd core && GOWORK=off go build ./...` (+ test di T5)
+  - Files: `core/schemas/grant.go`
+  - Deps: none · Size: S
+  - ⚠️ Ask first: kontrak interface.
 
-- [x] **T5 — `POST /api/models/test`: route + chat probe**
-  - Acceptance: sukses → `ok:true` + `ttft_ms` + `total_ms`; error provider → `ok:false` + pesan; timeout → `ok:false` `timeout setelah 60s`; tanpa model/provider → 400; `IsProbe` + `SkipBudgetAndRateLimits` di-set.
-  - Verify: `cd transports/bifrost-http && go test ./handlers/ -run TestModelProbe`
-  - Files: `transports/bifrost-http/handlers/providers.go`, `transports/bifrost-http/handlers/providers_test.go`
-  - Deps: T1–T4 · Size: M
+- [ ] **T5 — `framework/grant` implement `ModelListed`**
+  - Acceptance: nil → true; `[]` hanya rule (bukan model); deep-copy tidak alias.
+  - Verify: `cd framework && GOWORK=off go test ./grant/ -run 'Listed|ModelListed'`
+  - Files: `framework/grant/permit.go`, `framework/grant/access.go`, test terkait
+  - Deps: T4 · Size: S
 
-- [x] **T6 — Streaming mode dispatch**
-  - Acceptance: responses/completion/audio_speech/audio_transcription/image_generation/image_edit memanggil method core benar; mode tak didukung → 400; unary tidak pernah dapat `ttft_ms`.
-  - Verify: `go test ./handlers/ -run TestModelProbeModeDispatch`
-  - Files: `handlers/providers.go` (+ file probe bila dipisah), `handlers/providers_test.go`
-  - Deps: T5 · Size: M
+## Phase 3: Governance gate + rule cache
 
-- [x] **T7 — Unary mode dispatch**
-  - Acceptance: embedding/rerank/decisions/ocr/video_generation → satu panggilan, `total_ms` saja.
-  - Verify: `go test ./handlers/ -run TestModelProbeModeDispatch`
-  - Files: `handlers/providers.go`, `handlers/providers_test.go`
-  - Deps: T5 · Size: M
+- [ ] **T6 — `permitForVirtualKey` membangun listed**
+  - Acceptance: permit provider membawa `ListedModels`; permit membawa `ListedRules`; VK tanpa listed tetap nil.
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run ListedModels`
+  - Files: `plugins/governance/store.go`, `permits_test.go`
+  - Deps: T4, T5 · Size: S
 
-### Checkpoint: Endpoint
-- [x] `go test ./handlers/` hijau
-- [ ] Manual: curl probe → verdict tampil, **tidak ada baris Logs baru**, `total_requests` tidak bertambah
+- [ ] **T7 — `routingrulestore.go` cache definisi rule**
+  - Acceptance: aktif+scope cocok+model ∈ definisi → allowed; nonaktif/scope lain/hapus → false; invalidation fail-closed.
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run RoutingRuleStore`
+  - Files: `plugins/governance/routingrulestore.go` (baru), `routingrulestore_test.go` (baru)
+  - Deps: none (configstore) · Size: M
 
-## Phase 3: Data exposure + UI
+- [ ] **T8 — `evaluateAccess` gate requested-name vs listed**
+  - Acceptance: nil → perilaku lama; `[]` → non-rule ditolak; rule meneruskan target/fallback; requested-name yang diuji.
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'ListedModels|ModelBlocked|EvaluateRequest'`
+  - Files: `plugins/governance/resolver.go`, `resolver_test.go`
+  - Deps: T6, T7 · Size: M
 
-- [x] **T8 — `mode` di `/api/models/details`**
-  - Acceptance: field `mode` terisi (fallback `chat`); OpenAPI paths+schemas diperbarui; bundle script tetap jalan.
-  - Verify: `go test ./handlers/ -run TestListModelDetails`; `cd ui && npm run typecheck`
-  - Files: `handlers/providers.go`, `handlers/providers_test.go`, `docs/openapi/paths/management/providers.yaml`, `docs/openapi/schemas/management/providers.yaml`, `ui/lib/store/apis/providersApi.ts`
-  - Deps: T5 · Size: M
+- [ ] **T9 — Wiring invalidation di server**
+  - Acceptance: edit/hapus rule refresh cache governance; tanpa plugin → warn, routing path tetap.
+  - Verify: `cd transports/bifrost-http && GOWORK=off go test ./server/ -run RoutingRule`
+  - Files: `transports/bifrost-http/server/server.go`, `routing_test.go`
+  - Deps: T7 · Size: S
 
-- [x] **T9 — RTK mutation + helper murni**
-  - Acceptance: `testModel` mutation; `isModeProbeable`; `formatModelProbeToast` (TTFT vs Latency, `key auto`, error).
-  - Verify: `cd ui && npx vitest run lib/utils/modelProbe.test.ts`
-  - Files: `ui/lib/store/apis/providersApi.ts`, `ui/lib/types/providers.ts`, `ui/lib/utils/modelProbe.ts`, `ui/lib/utils/modelProbe.test.ts`
-  - Deps: T5, T8 · Size: S
+## Phase 4: Listing
 
-- [x] **T10 — Komponen tombol Test bersama**
-  - Acceptance: tombol ikon-only, spinner + disabled per baris, multi-probe antar baris; `data-testid` via prop.
-  - Verify: `npx vitest run components/modelTest/modelTestButton.test.tsx`; `npm run typecheck`
-  - Files: `ui/components/modelTest/modelTestButton.tsx`, `.../modelTestButton.test.tsx`
-  - Deps: T9 · Size: S
+- [ ] **T10 — `filterModelsForAccess` listed-aware + entri rule**
+  - Acceptance: `/v1/models` = persis entri + rule aktif/cocok; dashboard tidak terganggu (D9).
+  - Verify: `cd plugins/governance && GOWORK=off go test ./... -run 'FilterModelsForAccess|ListedModels'`
+  - Files: `plugins/governance/utils.go`, `permits_test.go`
+  - Deps: T7, T8 · Size: M
 
-- [x] **T11 — Wiring routing rules (target + fallback)**
-  - Acceptance: urutan `model|test|X` dan `provider|model|test|trash`; tombol tidak memicu drag; key baris terkirim.
-  - Verify: `npx vitest run app/workspace/routing-rules/views/routingFallbacksField.test.tsx`; `npm run typecheck`
-  - Files: `ui/app/workspace/routing-rules/views/routingRuleSheet.tsx`, `.../routingFallbacksField.tsx`, `.../routingFallbacksField.test.tsx`
-  - Deps: T10 · Size: S
+### Checkpoint: Backend gate
+- [ ] `make test-governance` + `make test-plugins` hijau
 
-- [x] **T12 — i18n semua locale**
+## Phase 5: Handler + config
+
+- [ ] **T11 — Validasi `listed_models` di handler VK create/update**
+  - Acceptance: valid diterima; model di luar allowed/tidak dikenal → 400; rule tak ada/scope tak cocok → 400; >100 → 400; dashboard `/api/models` tetap penuh.
+  - Verify: `cd transports/bifrost-http && GOWORK=off go test ./handlers/ -run 'VirtualKey|ListedModels'`
+  - Files: `transports/bifrost-http/handlers/governance.go`, `governance_test.go`
+  - Deps: T8, T10 · Size: M
+
+- [ ] **T12 — `config.schema.json` + name→ID di config load**
+  - Acceptance: schema menerima `listed_models`; nama rule di-resolve ke ID; ambigu ditolak; hash stabil.
+  - Verify: `cd transports/bifrost-http && GOWORK=off go test ./lib/ -run 'ListedModels|RoutingRuleID'`
+  - Files: `transports/config.schema.json`, `transports/bifrost-http/lib/config.go`, `config_test.go`
+  - Deps: T11 · Size: M
+
+### Checkpoint: Config end-to-end
+- [ ] config.json → DB → permit → listing round-trip
+
+## Phase 6: UI
+
+- [ ] **T13 — Types + zod + helper murni**
+  - Acceptance: tipe sesuai shape API; helper opsi picker benar; Vitest hijau.
+  - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`
+  - Files: `ui/lib/types/governance.ts`, `.../virtualKeySheet.tsx`, test terkait
+  - Deps: T11 · Size: S
+
+- [ ] **T14 — `listedModelsEditor.tsx`**
+  - Acceptance: add/remove; picker ⊆ allowed+rule; testid `vk-listed-models-*`; cap 100; Vitest hijau.
+  - Verify: `cd ui && npx vitest run components/ui/listedModelsEditor`; `npm run typecheck`
+  - Files: `ui/components/ui/listedModelsEditor.tsx` (baru) + test
+  - Deps: T13 · Size: M
+
+- [ ] **T15 — Wire ke `virtualKeySheet.tsx`**
+  - Acceptance: blok tampil; submit kirim `listed_models`; nilai edit ter-load.
+  - Verify: `cd ui && npx vitest run app/workspace/virtual-keys`; `npm run typecheck`
+  - Files: `ui/app/workspace/virtual-keys/views/virtualKeySheet.tsx`
+  - Deps: T14 · Size: S
+
+- [ ] **T16 — i18n semua locale**
   - Acceptance: `npm run i18n:check` exit 0; tidak ada string hardcoded baru.
   - Verify: `cd ui && npm run i18n:check`
-  - Files: `ui/locales/*/models.json` (12)
-  - Deps: T10 · Size: M (mekanis)
-
-- [x] **T13 — Wiring model catalog + gating mode**
-  - Acceptance: tombol `test|edit`; disabled + tooltip untuk mode non-probeable; gerbang `ModelProvider/Update`.
-  - Verify: `npx vitest run app/workspace/model-catalog`; `npm run typecheck`; `npm run build`
-  - Files: `ui/app/workspace/model-catalog/views/attributesTab.tsx`, test terkait
-  - Deps: T8, T10 · Size: S
+  - Files: `ui/locales/*/governance.json` (12)
+  - Deps: T14 · Size: M (mekanis)
 
 ### Checkpoint: UI
-- [x] `typecheck` + `lint` + `i18n:check` + `build` hijau
-- [ ] Manual `make dev`: tiga permukaan benar; dua baris diprobe bersamaan, toast sesuai urutan selesai
+- [ ] typecheck + lint + i18n:check + build hijau
 
-## Phase 4: Verification & Docs
+## Phase 7: Verification & Docs
 
-- [x] **T14 — Harness case `model probe`**
-  - Acceptance: augment + filter lulus; case meng-assert 200/`ok:true`/`ttft_ms>0`/`mode=="chat"`; insersi surgical.
-  - Verify: `node tests/e2e/api/runners/augment-provider-harness.mjs ...` lalu `filter-collection.mjs --feature "model probe"`
-  - Files: `tests/e2e/api/collections/provider-harness.json`
-  - Deps: T5, T6 · Size: S
+- [ ] **T17 — Harness case (`listed models`)**
+  - Acceptance: augment + filter lulus; case red pre-change, green post.
+  - Verify: `filter-collection.mjs --feature "listed models"`
+  - Files: `tests/e2e/api/collections/provider-harness.json`, `tmp/`
+  - Deps: T8, T10 · Size: S
 
-- [x] **T15 — E2E Playwright**
-  - Acceptance: `make run-e2e FLOW=routing-rules` dan `FLOW=model-catalog` hijau.
-  - Catatan: satu test drag-cancel (`should restore the original order when a drag is cancelled with Escape`) sudah merah sebelum pekerjaan ini (dibuktikan di worktree 95fc09cd3); crash 500-nya diperbaiki di commit 0ab9528c1, sisa perilaku Escape-menutup-sheet adalah bug lama.
-  - Verify: kedua target di atas.
-  - Files: `tests/e2e/features/routing-rules/pages/routing-rules.page.ts`, `.../routing-rules.spec.ts`, `tests/e2e/features/model-catalog/model-catalog.spec.ts`
-  - Deps: T11, T13 · Size: M
-
-- [x] **T16 — Docs**
-  - Acceptance: routing.mdx menjelaskan tombol Test, TTFT vs Latency, dan bahwa probe tidak tercatat di logs/biaya.
-  - Verify: review manual; `docs/openapi/spec_invariants_test.py` bila OpenAPI tersentuh.
-  - Files: `docs/features/governance/routing.mdx`
-  - Deps: T11, T13 · Size: XS
+- [ ] **T18 — Docs**
+  - Acceptance: `listed_models` terdokumentasi (nil vs [], model vs rule, cap 100, nama→ID).
+  - Verify: review manual
+  - Files: `docs/deployment-guides/config-json/governance.mdx`
+  - Deps: T15 · Size: XS
 
 ### Checkpoint: Complete
-- [ ] Semua Success Criteria spec terpenuhi
-- [ ] `make test`, `make test-plugins`, `make test-governance`, UI checks hijau
+- [ ] Semua Success Criteria (1-12) terpenuhi
+- [ ] make test / test-framework / test-plugins / test-governance + UI checks hijau
 - [ ] Siap review
