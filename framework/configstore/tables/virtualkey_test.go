@@ -232,3 +232,186 @@ func TestValidateVirtualKeyMetadata(t *testing.T) {
 		})
 	}
 }
+
+// TestVirtualKeyListedModelsRoundTrip pins the D7 distinction the whole feature rests on: an absent
+// block (nil, feature off) and an explicitly empty block ([], deny everything) must survive the trip
+// through the database without collapsing into each other. GORM's json serializer writes nil as NULL
+// and [] as '[]', so the only way this breaks is if a hook normalizes one into the other.
+func TestVirtualKeyListedModelsRoundTrip(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&TableVirtualKey{}))
+
+	modelEntry := TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
+	ruleEntry := TableListedModelEntry{RoutingRuleID: "rule-coding"}
+
+	t.Run("absent block stays nil", func(t *testing.T) {
+		vk := TableVirtualKey{ID: "lm-nil", Name: "lm-nil", Value: *schemas.NewSecretVar("sk-bf-lm-nil")}
+		require.NoError(t, db.Create(&vk).Error)
+
+		var stored TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", vk.ID).Error)
+		assert.Nil(t, stored.ListedModels)
+
+		raw, err := json.Marshal(stored)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), "listed_models", "an absent block must not be emitted as an empty one")
+	})
+
+	t.Run("empty block stays empty and denies", func(t *testing.T) {
+		vk := TableVirtualKey{
+			ID: "lm-empty", Name: "lm-empty", Value: *schemas.NewSecretVar("sk-bf-lm-empty"),
+			ListedModels: []TableListedModelEntry{},
+		}
+		require.NoError(t, db.Create(&vk).Error)
+
+		var stored TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", vk.ID).Error)
+		require.NotNil(t, stored.ListedModels, "[] must not come back as nil, which would silently re-enable the feature")
+		assert.Empty(t, stored.ListedModels)
+
+		raw, err := json.Marshal(stored)
+		require.NoError(t, err)
+		assert.Contains(t, string(raw), `"listed_models":[]`)
+	})
+
+	t.Run("provider/model and rule entries both survive", func(t *testing.T) {
+		vk := TableVirtualKey{
+			ID: "lm-entries", Name: "lm-entries", Value: *schemas.NewSecretVar("sk-bf-lm-entries"),
+			ListedModels: []TableListedModelEntry{modelEntry, ruleEntry},
+		}
+		require.NoError(t, db.Create(&vk).Error)
+
+		var stored TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", vk.ID).Error)
+		require.Len(t, stored.ListedModels, 2)
+		assert.ElementsMatch(t, []TableListedModelEntry{modelEntry, ruleEntry}, stored.ListedModels)
+	})
+}
+
+// TestTableListedModelEntryJSON pins the wire shape of one entry: a model entry is
+// {"provider","model"}, a rule entry is {"routing_rule_id"} for persistence plus the config-file
+// spelling {"routing_rule"} for the name a config.json author writes before it is resolved to an id.
+// The transient name must never be persisted next to the id it was resolved into.
+func TestTableListedModelEntryJSON(t *testing.T) {
+	t.Run("config file spells the rule as routing_rule", func(t *testing.T) {
+		var entry TableListedModelEntry
+		require.NoError(t, json.Unmarshal([]byte(`{"routing_rule":"coding"}`), &entry))
+		assert.Equal(t, "coding", entry.RoutingRuleName)
+		assert.Empty(t, entry.RoutingRuleID)
+	})
+
+	t.Run("stored form carries the rule id only", func(t *testing.T) {
+		entry := TableListedModelEntry{RoutingRuleID: "rule-coding", RoutingRuleName: "coding"}
+		raw, err := json.Marshal(entry)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"routing_rule_id":"rule-coding"}`, string(raw))
+	})
+
+	t.Run("model entry", func(t *testing.T) {
+		raw, err := json.Marshal(TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"provider":"openai","model":"gpt-5.4"}`, string(raw))
+	})
+}
+
+// TestValidateVirtualKeyListedModels covers the entry rule (exactly one of a model or a route, never
+// a wildcard), the 100-entry cap, and the normalization BeforeSave applies: blank entries dropped,
+// [] kept as [], nil kept as nil.
+func TestValidateVirtualKeyListedModels(t *testing.T) {
+	model := func(provider, name string) TableListedModelEntry {
+		return TableListedModelEntry{Provider: provider, Model: name}
+	}
+	tooMany := make([]TableListedModelEntry, 0, MaxVirtualKeyListedModelsEntries+1)
+	for i := range MaxVirtualKeyListedModelsEntries + 1 {
+		tooMany = append(tooMany, model("openai", fmt.Sprintf("m%d", i)))
+	}
+	atLimit := make([]TableListedModelEntry, 0, MaxVirtualKeyListedModelsEntries)
+	for i := range MaxVirtualKeyListedModelsEntries {
+		atLimit = append(atLimit, model("openai", fmt.Sprintf("m%d", i)))
+	}
+	tests := []struct {
+		name    string
+		entries []TableListedModelEntry
+		wantErr string
+	}{
+		{name: "nil", entries: nil},
+		{name: "empty", entries: []TableListedModelEntry{}},
+		{name: "model entry", entries: []TableListedModelEntry{model("openai", "gpt-5.4")}},
+		{name: "rule entry", entries: []TableListedModelEntry{{RoutingRuleID: "rule-coding"}}},
+		{name: "unresolved rule name", entries: []TableListedModelEntry{{RoutingRuleName: "coding"}}},
+		{name: "mixed", entries: []TableListedModelEntry{model("openai", "gpt-5.4"), {RoutingRuleID: "rule-coding"}}},
+		{name: "entries at limit", entries: atLimit},
+		{name: "too many entries", entries: tooMany, wantErr: "at most 100 entries"},
+		{name: "neither model nor rule", entries: []TableListedModelEntry{{}}, wantErr: "must name a model or a routing rule"},
+		{name: "provider without model", entries: []TableListedModelEntry{{Provider: "openai"}}, wantErr: "must name a model or a routing rule"},
+		{name: "model without provider", entries: []TableListedModelEntry{{Model: "gpt-5.4"}}, wantErr: "must name a model or a routing rule"},
+		{name: "both model and rule", entries: []TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4", RoutingRuleID: "rule-coding"}}, wantErr: "cannot be both"},
+		{name: "wildcard model", entries: []TableListedModelEntry{model("openai", "*")}, wantErr: `cannot be a wildcard`},
+		{name: "wildcard provider", entries: []TableListedModelEntry{model("*", "gpt-5.4")}, wantErr: `cannot be a wildcard`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateVirtualKeyListedModels(tt.entries)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+// TestNormalizeVirtualKeyListedModels pins what BeforeSave does to a block before writing it: blank
+// entries (a config-file template with empty fields) are dropped, the rest are ordered
+// deterministically so the config hash is stable, and neither nil nor [] changes meaning.
+func TestNormalizeVirtualKeyListedModels(t *testing.T) {
+	t.Run("nil stays nil", func(t *testing.T) {
+		var entries []TableListedModelEntry
+		normalizeVirtualKeyListedModels(&entries)
+		assert.Nil(t, entries)
+	})
+
+	t.Run("empty stays empty, not nil", func(t *testing.T) {
+		entries := []TableListedModelEntry{}
+		normalizeVirtualKeyListedModels(&entries)
+		require.NotNil(t, entries)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("blank entries are dropped", func(t *testing.T) {
+		entries := []TableListedModelEntry{
+			{},
+			{Provider: "openai", Model: "gpt-5.4"},
+			{Provider: " ", Model: " "},
+		}
+		normalizeVirtualKeyListedModels(&entries)
+		assert.Equal(t, []TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, entries)
+	})
+
+	t.Run("order is deterministic", func(t *testing.T) {
+		entries := []TableListedModelEntry{
+			{RoutingRuleID: "rule-b"},
+			{Provider: "openai", Model: "gpt-5.4"},
+			{RoutingRuleID: "rule-a"},
+			{Provider: "anthropic", Model: "claude-sonnet-5"},
+		}
+		normalizeVirtualKeyListedModels(&entries)
+		assert.Equal(t, []TableListedModelEntry{
+			{Provider: "anthropic", Model: "claude-sonnet-5"},
+			{Provider: "openai", Model: "gpt-5.4"},
+			{RoutingRuleID: "rule-a"},
+			{RoutingRuleID: "rule-b"},
+		}, entries)
+	})
+
+	t.Run("a config-file rule name is dropped before persist", func(t *testing.T) {
+		// The name only exists between config load and name→id resolution; persisting it would leave a
+		// stale name beside the id it was resolved into.
+		entries := []TableListedModelEntry{{RoutingRuleID: "rule-coding", RoutingRuleName: "coding"}}
+		normalizeVirtualKeyListedModels(&entries)
+		assert.Empty(t, entries[0].RoutingRuleName)
+	})
+}

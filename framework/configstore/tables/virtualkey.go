@@ -293,6 +293,13 @@ type TableVirtualKey struct {
 	// empty map is stored as NULL, and a nil map on UpdateVirtualKey keeps the stored value.
 	Metadata map[string]string `gorm:"type:text;serializer:json" json:"metadata,omitempty"`
 
+	// ListedModels is the key's own answer to "what may this key see and call", layered on top of
+	// each provider config's allowed_models: it is the exact content of /v1/models for the key and
+	// the outer bound on the model names it may request. Validated by
+	// ValidateVirtualKeyListedModels; nil (NULL) leaves the feature off, while an explicitly empty
+	// block ('[]') denies every model but the routing rules it names.
+	ListedModels []TableListedModelEntry `gorm:"type:text;serializer:json" json:"listed_models,omitempty"`
+
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
 	Customer  *TableCustomer  `gorm:"foreignKey:CustomerID" json:"customer,omitempty"`
@@ -399,14 +406,30 @@ func (vk *TableVirtualKey) VaultStoreSelfManaged() {}
 // and is dropped otherwise. Without that, an unresolved assignee would serialize as null
 // and be indistinguishable from a genuinely unassigned key, so the UI would render "no
 // assignee" for a key that has one instead of refetching it.
+//
+// listed_models has the same problem in a different direction: nil leaves the feature off and
+// [] denies every model, but omitempty drops both. The block is therefore re-attached explicitly
+// whenever it is non-nil, so an edit round-trip cannot turn "deny everything" into "no restriction".
 func (vk TableVirtualKey) MarshalJSON() ([]byte, error) {
 	type Alias TableVirtualKey
+	alias := Alias(vk)
+	alias.ListedModels = nil
+	var listedModels json.RawMessage
+	if vk.ListedModels != nil {
+		encoded, err := json.Marshal(vk.ListedModels)
+		if err != nil {
+			return nil, err
+		}
+		listedModels = encoded
+	}
 	b, err := json.Marshal(&struct {
 		Alias
-		Value string `json:"value"`
+		Value        string          `json:"value"`
+		ListedModels json.RawMessage `json:"listed_models,omitempty"`
 	}{
-		Alias: Alias(vk),
-		Value: vk.Value.GetValue(),
+		Alias:        alias,
+		Value:        vk.Value.GetValue(),
+		ListedModels: listedModels,
 	})
 	if err != nil || vk.AssigneeResolved {
 		return b, err
@@ -506,6 +529,13 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	if len(vk.Metadata) == 0 {
 		vk.Metadata = nil
 	}
+
+	// listed_models is normalized but deliberately never collapsed: nil keeps the feature off and []
+	// keeps a key that may call nothing but the routing rules it names.
+	if err := ValidateVirtualKeyListedModels(vk.ListedModels); err != nil {
+		return err
+	}
+	normalizeVirtualKeyListedModels(&vk.ListedModels)
 
 	// Hash must be computed before encryption (from plaintext value).
 	if vk.Value.IsSet() {
