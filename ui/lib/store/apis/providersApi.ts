@@ -12,6 +12,7 @@ import {
 	UpdateProviderKeyRequest,
 } from "@/lib/types/config";
 import { DBKey, PricingOverrideMatchType, PricingOverridePatch, PricingOverrideScopeKind } from "@/lib/types/governance";
+import type { ModelTestRequest, ModelTestResult } from "@/lib/types/modelTest";
 import { baseApi } from "./baseApi";
 
 function sortProviders(a: ModelProvider, b: ModelProvider) {
@@ -38,6 +39,8 @@ export interface ListModelsResponse {
 // ModelDetails is the shape returned by /api/models/details — used by the
 // model-catalog Models tab to list (model, provider) entries with their
 // additional_attributes.
+export type { ModelTestRequest, ModelTestResult } from "@/lib/types/modelTest";
+
 export interface ModelDetails {
 	name: string;
 	provider: string;
@@ -616,6 +619,18 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: ["Models"],
 		}),
 
+		// Probe one model: the server sends a real request through the same
+		// routing and key selection as normal traffic and reports the verdict with
+		// its timing. Deliberately invalidates nothing — a probe writes no log,
+		// cost, budget or stats, so no cached list changes.
+		testModel: builder.mutation<ModelTestResult, ModelTestRequest>({
+			query: (body) => ({
+				url: "/models/test",
+				method: "POST",
+				body,
+			}),
+		}),
+
 		// Batch upsert additional_attributes on existing pricing rows. The
 		// pricing row must already exist for each (model, provider); a missing
 		// row surfaces as a 400. An entry with an empty additional_attributes
@@ -704,4 +719,5 @@ export const {
 	useGetDatasheetEntryQuery,
 	useSaveDatasheetOverrideMutation,
 	useDeleteDatasheetOverrideMutation,
+	useTestModelMutation,
 } = providersApi;
