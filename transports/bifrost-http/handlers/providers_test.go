@@ -3385,6 +3385,18 @@ func TestListModels_UnfilteredListingSkipsCallerAccess(t *testing.T) {
 			query:  "provider=openai&limit=10",
 			want:   []string{"gpt-4o"},
 		},
+		{
+			// A key's listed_models narrows /v1/models and what it may call; the management
+			// listing is for configuring the gateway, so it stays the access-narrowed catalog
+			// it always was.
+			name: "virtual key with a listed_models block, filtered listing",
+			access: accessForProviderPermits(schemas.ProviderPermit{
+				Provider: "openai", AllowedModels: []string{"*"}, ListedModels: []string{"gpt-4o-mini"},
+			}),
+			caller: withVirtualKey,
+			query:  "provider=openai&limit=10",
+			want:   []string{"gpt-4o", "gpt-4o-mini"},
+		},
 	} {
 		for _, route := range []struct {
 			name   string
