@@ -44,7 +44,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 1: Persistence (framework/configstore)
 
-- [ ] **Task 1: Column `ListedModels` + entry type**
+- [x] **Task 1: Column `ListedModels` + entry type**
   - Description: `type TableListedModelEntry struct { Provider, Model, RoutingRuleID string }` (semua `json:"..."`; `RoutingRuleName string \`json:"routing_rule,omitempty"\`` sebagai alias config-only `gorm:"-"` untuk nama rule) di `tables/virtualkey.go`; field `ListedModels []TableListedModelEntry \`gorm:"type:text;serializer:json" json:"listed_models,omitempty"\`` di `TableVirtualKey`; normalisasi di `BeforeSave` (drop entry kosong, **jangan** collapse `[]`→nil) + validator `ValidateVirtualKeyListedModels` (cap 100, entry model XOR rule, tidak boleh `*`).
   - Acceptance: JSON round-trip `[]` vs `nil` terbedakan; entry rule + provider/model terbaca; `[]` tidak jadi nil.
   - Verify: `cd framework && GOWORK=off go test ./configstore/tables/ -run ListedModels`.

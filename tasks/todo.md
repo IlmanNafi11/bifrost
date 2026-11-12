@@ -4,7 +4,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
 
 ## Phase 1: Persistence (framework/configstore)
 
-- [ ] **T1 — Column `ListedModels` + entry type**
+- [x] **T1 — Column `ListedModels` + entry type**
   - Acceptance: JSON round-trip membedakan `[]` vs `nil`; entry rule + provider/model terbaca; `[]` tidak di-collapse jadi nil.
   - Verify: `cd framework && GOWORK=off go test ./configstore/tables/ -run ListedModels`
   - Files: `framework/configstore/tables/virtualkey.go`, `virtualkey_test.go`
