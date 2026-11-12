@@ -9,6 +9,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/valyala/fasthttp"
 )
@@ -348,6 +349,39 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 		})
 	}
 	return permits
+}
+
+// listedModelsForProvider returns the models a key's listed_models block names for provider, or nil
+// when the block says nothing about that provider. The two answers are not the same: nil leaves the
+// listing restriction off, while an empty non-nil slice lists no model and so permits none of them.
+//
+// A key that has the block at all but names no model of provider is on the second side of that line:
+// its listing is authoritative, and that provider's models are not in it. That is what makes a block
+// of rules alone deny every model, and it is why the empty slice is returned rather than nil.
+func listedModelsForProvider(entries []configstoreTables.TableListedModelEntry, provider string) schemas.WhiteList {
+	if entries == nil {
+		return nil
+	}
+	models := make(schemas.WhiteList, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Provider == provider && entry.Model != "" {
+			models = append(models, entry.Model)
+		}
+	}
+	return models
+}
+
+// listedRuleIDs returns the routing rule IDs a key's listed_models block names, or nil when it names
+// none. Only resolved IDs are carried: an entry still holding a name has not been through the
+// config load's name→ID resolution, and a name is not something the routing layer can be asked about.
+func listedRuleIDs(entries []configstoreTables.TableListedModelEntry) []string {
+	var ruleIDs []string
+	for _, entry := range entries {
+		if entry.RoutingRuleID != "" {
+			ruleIDs = append(ruleIDs, entry.RoutingRuleID)
+		}
+	}
+	return ruleIDs
 }
 
 // isLiveSessionContinuation reports a billing unit of an admitted live session: the continuation

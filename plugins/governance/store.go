@@ -1538,13 +1538,15 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	providerPermits := make([]schemas.ProviderPermit, 0, len(vk.ProviderConfigs))
 	for i := range vk.ProviderConfigs {
 		config := vk.ProviderConfigs[i]
-		providerPermits = append(providerPermits, schemas.ProviderPermit{
+		pp := schemas.ProviderPermit{
 			Provider:          config.Provider,
 			AllowedModels:     config.AllowedModels,
 			BlacklistedModels: config.BlacklistedModels,
 			KeyIDs:            config.KeyIDs(),
 			Weight:            config.Weight,
-		})
+		}
+		pp.ListedModels = listedModelsForProvider(vk.ListedModels, config.Provider)
+		providerPermits = append(providerPermits, pp)
 	}
 	if vk.AllowAllProviders && gs.inMemoryStore != nil {
 		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames())
@@ -1578,9 +1580,15 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 	for _, endpointGrant := range vk.RelayGrants {
 		endpointPermits = append(endpointPermits, endpointGrant.RelayName)
 	}
-	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits,
+	options := []grant.PermitOption{
 		grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders),
-		grant.WithRelayPermits(endpointPermits))
+		grant.WithRelayPermits(endpointPermits),
+	}
+	if ruleIDs := listedRuleIDs(vk.ListedModels); ruleIDs != nil {
+		options = append(options, grant.WithListedRules(ruleIDs))
+	}
+	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits,
+		options...)
 }
 
 // virtualMCPByID returns a cached Virtual MCP definition, or nil if none is cached for the id.

@@ -1717,3 +1717,54 @@ func TestEvaluateSkipsASettlingErrorWhenSpendingChecksAreSkipped(t *testing.T) {
 		assert.Equal(t, DecisionAllow, result.Decision)
 	})
 }
+
+// The key's listed_models block becomes the permit's listing: a model entry lands on its provider's
+// provider permit, a rule entry becomes a listed rule ID, and a key without a block carries none of
+// it, so the feature stays off. A model entry for a provider the key has no provider config for is
+// not a grant at all (the handler refuses it; this is the second net) and is dropped rather than
+// creating a permit out of nothing.
+func TestPermitForVirtualKey_ListedModels(t *testing.T) {
+	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{
+		{Provider: "openai", Model: "gpt-5.4"},
+		{Provider: "anthropic", Model: "claude-sonnet-5"},
+		{RoutingRuleID: "rule-coding"},
+		{Provider: "bedrock", Model: "not-configured"},
+	}
+
+	permit := vkPermit(vk, nil)
+	require.Len(t, permit.ProviderPermits(), 2, "a listed entry cannot conjure a provider permit")
+
+	byProvider := map[string]schemas.WhiteList{}
+	for _, pp := range permit.ProviderPermits() {
+		byProvider[pp.Provider] = pp.ListedModels
+	}
+	assert.Equal(t, schemas.WhiteList{"gpt-5.4"}, byProvider["openai"])
+	assert.Equal(t, schemas.WhiteList{"claude-sonnet-5"}, byProvider["anthropic"])
+	assert.Equal(t, []string{"rule-coding"}, permit.ListedRules())
+
+	// A deny-all block is not an absent one.
+	denyAll := buildVirtualKey("vk-deny", "sk-bf-deny", "Deny Key", true)
+	denyAll.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+	}
+	denyAll.ListedModels = []configstoreTables.TableListedModelEntry{{RoutingRuleID: "rule-coding"}}
+	denied := vkPermit(denyAll, nil)
+	require.Len(t, denied.ProviderPermits(), 1)
+	require.NotNil(t, denied.ProviderPermits()[0].ListedModels, "a listing of rules only still forbids every model")
+	assert.Empty(t, denied.ProviderPermits()[0].ListedModels)
+
+	// No block at all leaves the permit exactly as it was before the feature existed.
+	plain := buildVirtualKey("vk-plain", "sk-bf-plain", "Plain Key", true)
+	plain.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+	}
+	plainPermit := vkPermit(plain, nil)
+	require.Len(t, plainPermit.ProviderPermits(), 1)
+	assert.Nil(t, plainPermit.ProviderPermits()[0].ListedModels)
+	assert.Nil(t, plainPermit.ListedRules())
+}
