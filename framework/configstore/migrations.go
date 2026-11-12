@@ -590,6 +590,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_pending_verification_column"}, run: migrationAddMCPClientPendingVerificationColumn},
 	{IDs: []string{"add_cache_creation_above_12hr_pricing_columns"}, run: migrationAddCacheCreationAbove12hrPricingColumns},
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
+	{IDs: []string{"add_virtual_key_listed_models_column"}, run: migrationAddVirtualKeyListedModelsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16342,6 +16343,36 @@ func migrationAddVirtualKeyMetadataColumn(ctx context.Context, db *gorm.DB, logg
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return fmt.Errorf("add_virtual_key_metadata_column is non-rollbackable: dropping metadata would permanently delete every virtual key's metadata; the column is additive and older binaries safely ignore it")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyListedModelsColumn adds the nullable listed_models column to
+// governance_virtual_keys. Existing keys keep NULL, which leaves the feature off, and
+// GenerateVirtualKeyHash only hashes the block when the key has one, so no config_hash
+// backfill is needed.
+func migrationAddVirtualKeyListedModelsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_listed_models_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "ListedModels"); err != nil {
+				return fmt.Errorf("failed to add listed_models column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_listed_models_column is non-rollbackable: dropping listed_models would permanently delete every virtual key's model listing, and a NULL column reads as \"no restriction\", so it would also widen every key's access; the column is additive and older binaries safely ignore it")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

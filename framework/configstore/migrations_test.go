@@ -4723,6 +4723,51 @@ func TestMigrationAddVirtualKeyMetadataColumn(t *testing.T) {
 	}
 }
 
+// TestMigrationAddVirtualKeyListedModelsColumn pins the listed_models column: the migration adds it
+// and is idempotent, and the nil / [] distinction survives the trip through the column, because the
+// only alternatives are "feature off" and "deny every model but the listed rules".
+func TestMigrationAddVirtualKeyListedModelsColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "listed_models"), "listed_models column must not exist before migration")
+	require.NoError(t, migrationAddVirtualKeyListedModelsColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "listed_models"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_listed_models_column").Error)
+	require.NoError(t, migrationAddVirtualKeyListedModelsColumn(ctx, db, testMigrationLogger))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	off := tables.TableVirtualKey{ID: "vk-lm-mig-off", Name: "vk-lm-mig-off", Value: *schemas.NewSecretVar("sk-bf-vk-lm-mig-off")}
+	denyAll := tables.TableVirtualKey{
+		ID: "vk-lm-mig-deny", Name: "vk-lm-mig-deny", Value: *schemas.NewSecretVar("sk-bf-vk-lm-mig-deny"),
+		ListedModels: []tables.TableListedModelEntry{},
+	}
+	listed := tables.TableVirtualKey{
+		ID: "vk-lm-mig-listed", Name: "vk-lm-mig-listed", Value: *schemas.NewSecretVar("sk-bf-vk-lm-mig-listed"),
+		ListedModels: []tables.TableListedModelEntry{
+			{Provider: "openai", Model: "gpt-5.4"},
+			{RoutingRuleID: "rule-coding"},
+		},
+	}
+	for _, vk := range []*tables.TableVirtualKey{&off, &denyAll, &listed} {
+		require.NoError(t, db.Create(vk).Error)
+	}
+
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(off.ID).ListedModels, "a key written before the column has no block, so the feature stays off")
+	denied := read(denyAll.ID)
+	require.NotNil(t, denied.ListedModels, "[] must not read back as nil after the migration")
+	assert.Empty(t, denied.ListedModels)
+	assert.ElementsMatch(t, listed.ListedModels, read(listed.ID).ListedModels)
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
