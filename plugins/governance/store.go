@@ -87,6 +87,11 @@ type LocalGovernanceStore struct {
 
 	// Logger
 	logger schemas.Logger
+
+	// routingRules caches stored routing-rule definitions for the listed_models exception. Built at
+	// construction from whichever source the store loaded from, and refreshed through Reload/Remove
+	// by the server's rule edit/delete paths.
+	routingRules *RoutingRuleStore
 }
 
 type GovernanceData struct {
@@ -224,6 +229,10 @@ type GovernanceStore interface {
 	// about virtual keys looks at what the presented key funds; a store that funds candidates from
 	// something else answers for that too, and load balancing does not need to know the difference.
 	CheckProviderCandidateExclusion(ctx *schemas.BifrostContext, access schemas.Access, candidate schemas.ProviderCandidate, model string) (Decision, error)
+	// RoutingRules is the cache of stored routing-rule definitions behind the listed_models
+	// exception: what a rule reaches, and whether it is enabled and in scope. Nil only for a store
+	// that was never given a source of rules, which then refuses every rule.
+	RoutingRules() *RoutingRuleStore
 	// Budget crud.
 	// UpsertBudgetConfig preserves in-memory CurrentUsage/LastReset on replacement —
 	// use it for every config publish (fresh load or admin edit) so a concurrent
@@ -322,9 +331,19 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 		if err := store.loadFromDatabase(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load initial data: %w", err)
 		}
+		routingRules, err := NewRoutingRuleStore(ctx, configStore, logger)
+		if err != nil {
+			return nil, err
+		}
+		store.routingRules = routingRules
 	} else {
 		if err := store.loadFromConfigMemory(ctx, governanceConfig); err != nil {
 			return nil, fmt.Errorf("failed to load governance data from config memory: %w", err)
+		}
+		// The file-backed deployment's rules are in the config, not behind a config store.
+		store.routingRules = newRoutingRuleStore(logger)
+		if governanceConfig != nil {
+			store.routingRules.seed(governanceConfig.RoutingRules)
 		}
 	}
 
@@ -1511,6 +1530,14 @@ func (gs *LocalGovernanceStore) CheckProviderCandidateExclusion(ctx *schemas.Bif
 		return decision, err
 	}
 	return DecisionAllow, nil
+}
+
+// RoutingRules implements GovernanceStore.
+func (gs *LocalGovernanceStore) RoutingRules() *RoutingRuleStore {
+	if gs == nil {
+		return nil
+	}
+	return gs.routingRules
 }
 
 // permitForVirtualKey builds the permit a virtual key confers: one provider permit per configured

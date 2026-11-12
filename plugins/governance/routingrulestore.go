@@ -58,32 +58,34 @@ type RoutingRuleStore struct {
 // a startup problem, not a silent one. A nil config store builds an empty cache, which refuses
 // every rule.
 func NewRoutingRuleStore(ctx context.Context, configStore configstore.ConfigStore, logger schemas.Logger) (*RoutingRuleStore, error) {
-	store := &RoutingRuleStore{
-		configStore: configStore,
-		logger:      logger,
-		byID:        map[string]*routingRuleDefinition{},
-		byName:      map[string]*routingRuleDefinition{},
-	}
+	store := newRoutingRuleStore(logger)
+	store.configStore = configStore
 	if configStore == nil {
 		return store, nil
 	}
-	if err := store.loadAll(ctx); err != nil {
-		return nil, err
+	rules, err := configStore.GetRoutingRules(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load routing rules for listing cache: %w", err)
 	}
+	store.seed(rules)
 	return store, nil
 }
 
-func (s *RoutingRuleStore) loadAll(ctx context.Context) error {
-	rules, err := s.configStore.GetRoutingRules(ctx)
-	if err != nil {
-		return fmt.Errorf("load routing rules for listing cache: %w", err)
+func newRoutingRuleStore(logger schemas.Logger) *RoutingRuleStore {
+	return &RoutingRuleStore{
+		logger: logger,
+		byID:   map[string]*routingRuleDefinition{},
+		byName: map[string]*routingRuleDefinition{},
 	}
+}
+
+// seed installs the definitions the store was built from.
+func (s *RoutingRuleStore) seed(rules []configstoreTables.TableRoutingRule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range rules {
 		s.storeLocked(&rules[i])
 	}
-	return nil
 }
 
 // storeLocked publishes one rule, replacing whatever was cached under its id and name. The previous

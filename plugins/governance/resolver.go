@@ -170,6 +170,23 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 		}
 	}
 
+	// The listing gate: a key's listed_models block narrows what it may call beyond allowed_models,
+	// and the routing rules it names are the only way past it for a model the block does not list.
+	// It reads the model the caller asked for, not the one the request ended up on: a rule rewrite
+	// replaces the model, and the name it replaced is what the caller was allowed to ask for.
+	if !skipModelCheck {
+		requested := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestedModel)
+		if requested != "" && !access.ModelListed(string(provider), requested) {
+			rules := r.store.RoutingRules()
+			if rules == nil || !rules.AllowsRequest(ctx, requested, string(provider), model) {
+				return &EvaluationResult{
+					Decision: DecisionModelBlocked,
+					Reason:   denialReason(fmt.Sprintf("Model '%s' is not listed for this virtual key", requested), access.DeniedPermitsForModel(string(provider), requested)),
+				}
+			}
+		}
+	}
+
 	// Publish the provider keys the request may use, when its access restricts them at all.
 	// Downstream key selection consumes plain key ids, so it never has to know what a permit is.
 	if keyIDs, restricted := access.KeysForModel(string(provider), model); restricted {

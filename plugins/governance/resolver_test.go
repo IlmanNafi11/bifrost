@@ -1607,3 +1607,147 @@ func BenchmarkPreLLMHookPassthroughBodyModels(b *testing.B) {
 		})
 	}
 }
+
+// The listing gate: a key with a listed_models block may call exactly what the block lists, and the
+// routing rules it names open their targets and fallbacks. The gate reads the model the caller
+// asked for, BifrostContextKeyRequestedModel (pra-rewrite), not the model the request ended up on,
+// and a request may only be refused by it when the request's model is checked at all - the listing
+// gives back nothing on a request that names no model.
+func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
+	logger := NewMockLogger()
+
+	gpt := configstoreTables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
+	ruleEntry := configstoreTables.TableListedModelEntry{RoutingRuleID: "rule-coding"}
+	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+		buildProviderConfig("deepseek", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{gpt, ruleEntry}
+	gov := &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RoutingRules: []configstoreTables.TableRoutingRule{{
+			ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+			CelExpression: "true",
+			Targets: []configstoreTables.TableRoutingTarget{{
+				Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1,
+			}},
+		}},
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, gov, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	t.Run("a listed model is callable", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+		assertDecision(t, DecisionAllow, evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false))
+	})
+
+	t.Run("a model the key did not list is refused", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
+		assert.Contains(t, result.Reason, "not listed for this virtual key")
+	})
+
+	t.Run("a listed routing rule reaches its target", func(t *testing.T) {
+		// What routing leaves behind: the caller asked for "coding", the request now sits on the
+		// rule's own target. Neither name is in allowed_models; the rule is what opens both.
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionAllow, result)
+	})
+
+	t.Run("a listed rule does not open a model it does not reach", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.DeepSeek, "deepseek-v4-pro", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
+	})
+
+	t.Run("a routing rule the key did not list is refused", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "other")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "other", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
+	})
+
+	t.Run("the requested name governs, not the post-rewrite model", func(t *testing.T) {
+		// A listed model reached through a rule rewrite: the caller asked for something the block
+		// lists, routing moved it, and the gate reads the name the caller sent.
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionAllow, result)
+
+		// The reverse: the caller asked for a name it may not use, and the rewrite must not launder
+		// it into an allowed final model.
+		ctx = resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "not-listed")
+		result = evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
+	})
+}
+
+// An empty listed_models block denies every model: this is the deny-by-default shape, and only a
+// rule the key also listed could open anything.
+func TestBudgetResolver_EvaluateRequest_ListedModelsDenyAll(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-deny", "sk-bf-deny", "Deny Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-deny")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+	assertDecision(t, DecisionModelBlocked, evaluateVirtualKey(resolver, ctx, "sk-bf-deny", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false))
+}
+
+// A key without a listed_models block keeps the behaviour it had before the feature existed: the
+// gate is off, whatever the access says.
+func TestBudgetResolver_EvaluateRequest_ListedModelsAbsentIsOff(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-plain", "sk-bf-plain", "Plain Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-plain")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+	assertDecision(t, DecisionAllow, evaluateVirtualKey(resolver, ctx, "sk-bf-plain", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false))
+}
+
+// The listing gate refuses a probe the way it refuses any model that is not listed: the probe must
+// name what it may reach.
+func TestBudgetResolver_EvaluateRequest_ListedModelsAppliesToProbes(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-probe", "sk-bf-probe", "Probe Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-probe")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o")
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	assertDecision(t, DecisionModelBlocked, evaluateVirtualKey(resolver, ctx, "sk-bf-probe", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false))
+}
