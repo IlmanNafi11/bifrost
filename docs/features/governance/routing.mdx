@@ -334,6 +334,40 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
 
 <Note>The models restrictions applied on the keys of individual providers will always be applied and will work together with the provider/model or api key restrictions set on the virtual key.</Note>
 
+## Testing a Target Before You Route to It
+
+The routing rule sheet and the model catalog show a **Test** button on each target, fallback and catalog row. It sends one real request to that exact provider/model through the same routing, key selection and plugin pipeline normal traffic uses, so a model that is misconfigured, out of quota or decommissioned is reported before any user traffic reaches it.
+
+| Field | What it reports |
+|---|---|
+| `ok` | Whether the provider answered. A refusal is still a verdict, so the endpoint returns HTTP 200 with `ok: false` and the provider's own message. |
+| `mode` | The catalog mode the probe ran in (`chat`, `responses`, `embedding`, …). It is read from the catalog server-side; the caller only names the provider and model. |
+| `ttft_ms` | Time to the first chunk that carried output. Streaming modes only. |
+| `total_ms` | Time to the end of the probe, always set. |
+| `key_name` / `key_id` | The provider key the probe actually used. Omit `key_id` in the request and the gateway selects a key exactly as it would for a real request. |
+
+```bash
+curl -X POST http://localhost:8080/api/models/test \
+  -H 'Content-Type: application/json' \
+  -d '{"provider": "openai", "model": "gpt-4o-mini"}'
+```
+
+```json
+{
+  "ok": true,
+  "mode": "chat",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "ttft_ms": 412,
+  "total_ms": 968,
+  "key_name": "OpenAI API Key"
+}
+```
+
+A probe is **not recorded**: the request carries a reserved internal marker that the logging, governance and semantic-cache plugins read, so it writes no log row, no cost, no budget consumption and no request count. A repeated Test therefore never shows up in observability, and a `/api/logs` query stays empty for it.
+
+<Note>A mode with no universal request payload — image generation and speech among them — shows the button disabled with the reason, because there is no request that could stand in for a real one. Modes that create an asynchronous job, such as video generation, count a created job as a successful probe rather than waiting for the render.</Note>
+
 ## Troubleshooting
 
 ### Model Catalog Sync Failures

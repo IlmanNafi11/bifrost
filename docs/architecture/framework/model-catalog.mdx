@@ -56,6 +56,12 @@ The Model Catalog maintains a pool of available models for each provider, popula
 - **Provider Discovery**: Finding all providers that support a specific model with intelligent cross-provider resolution (OpenRouter, Vertex, Groq, Bedrock)
 - **Model Validation**: Checking if a model is allowed for a provider based on allowed models lists (supports provider-prefixed entries)
 
+### **3b. Model Probing**
+
+Each catalog row carries a `mode` (from its datasheet entry, defaulting to `chat`), and `POST /api/models/test` probes a model in that mode: one real request through the gateway's routing, key selection and plugin pipeline. Streaming modes report `ttft_ms` (time to the first chunk with output) alongside `total_ms`; unary modes report `total_ms` only.
+
+The probe sets a reserved `IsProbe` context flag, so the logging, governance and semantic-cache plugins skip it entirely: no log row, cost, budget consumption or request count is written. The dashboard's Test button on a catalog or routing row calls this endpoint, and a mode with no universal request payload is reported as not testable rather than probed with a request that proves nothing.
+
 ### **4. Intelligent Cache Cost Handling**
 
 It integrates with semantic caching to provide accurate cost calculations:
