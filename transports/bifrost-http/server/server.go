@@ -1490,6 +1490,9 @@ func (s *BifrostHTTPServer) ReloadComplexityAnalyzerConfig(ctx context.Context, 
 }
 
 // ReloadRoutingRule reloads a routing rule from the database into the routing plugin's rule cache
+// and governance's definition cache. Both read the rule: routing to route on it, and governance to
+// decide whether the rule is one a virtual key listed_models block may use. Refreshing only one
+// leaves the other answering from a definition the operator just changed.
 func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) error {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
@@ -1503,10 +1506,13 @@ func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) er
 	if err := routingPlugin.GetRuleStore().UpsertRule(ctx, rule); err != nil {
 		return fmt.Errorf("failed to update routing rule in rule store: %w", err)
 	}
+	s.reloadGovernanceRoutingRule(ctx, id)
 	return nil
 }
 
-// RemoveRoutingRule removes a routing rule from the routing plugin's rule cache
+// RemoveRoutingRule removes a routing rule from the routing plugin's rule cache and from
+// governance's definition cache. A deleted rule must stop opening models for a key that listed it,
+// which is what removing it from governance's cache settles on the next request.
 func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) error {
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
@@ -1515,7 +1521,41 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	if err := routingPlugin.GetRuleStore().DeleteRule(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete routing rule from rule store: %w", err)
 	}
+	s.removeGovernanceRoutingRule(id)
 	return nil
+}
+
+// reloadGovernanceRoutingRule refreshes one rule in governance's listed_models definition cache.
+// A deployment without the governance plugin loaded has no cache to refresh, which is a warning
+// rather than a failure: the routing reload the caller asked for already succeeded.
+func (s *BifrostHTTPServer) reloadGovernanceRoutingRule(ctx context.Context, id string) {
+	plugin, err := s.getGovernancePlugin()
+	if err != nil || plugin == nil {
+		logger.Warn("governance plugin not found; routing rule %s not refreshed in the listing cache: %v", id, err)
+		return
+	}
+	store := plugin.GetGovernanceStore()
+	if store == nil || store.RoutingRules() == nil {
+		return
+	}
+	if err := store.RoutingRules().Reload(ctx, id); err != nil {
+		logger.Warn("failed to refresh routing rule %s in the governance listing cache: %v", id, err)
+	}
+}
+
+// removeGovernanceRoutingRule drops one rule from governance's listed_models definition cache, the
+// same warning-not-failure rule as reloadGovernanceRoutingRule.
+func (s *BifrostHTTPServer) removeGovernanceRoutingRule(id string) {
+	plugin, err := s.getGovernancePlugin()
+	if err != nil || plugin == nil {
+		logger.Warn("governance plugin not found; removed routing rule %s still cached for listings: %v", id, err)
+		return
+	}
+	store := plugin.GetGovernanceStore()
+	if store == nil || store.RoutingRules() == nil {
+		return
+	}
+	store.RoutingRules().Remove(id)
 }
 
 // ReloadWebhookEndpoint refreshes a single webhook endpoint in the in-memory
