@@ -1019,6 +1019,51 @@ func TestPreLLMHookChecksModelsNamedByServerTools(t *testing.T) {
 	}
 }
 
+// The listing gate applies wherever a model name reaches governance, not only on a chat request
+// that names one on the request object. These routes all carry the same loader model in a nested
+// body or per-item parameter, and every one of them is refused under a key whose block does not
+// list it.
+func TestPreLLMHookListedModelsEveryRoute(t *testing.T) {
+	const loader = "gpt-4o-mini"
+	vk := buildVirtualKeyWithProviders("vk-route", "sk-bf-route", "Route VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	})
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+
+	routes := []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{"chat", &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: loader, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("hi")}}},
+		}}},
+		{"responses", &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI, Model: loader, Params: &schemas.ResponsesParameters{},
+		}}},
+		{"passthrough body", &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+			Provider: schemas.OpenAI, Model: "", Method: "POST", Path: "/v1/chat/completions",
+			Body: []byte(`{"model":"` + loader + `","messages":[{"role":"user","content":"hi"}]}`),
+		}}},
+		{"inline batch item", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.OpenAI,
+			Requests: []schemas.BatchRequestItem{{CustomID: "a", Params: map[string]any{"model": loader, "messages": []any{}}}},
+		}}},
+	}
+	for _, route := range routes {
+		t.Run(route.name+": a model outside the key's listing is refused", func(t *testing.T) {
+			plugin := newAccessTestPlugin(t, vk, nil)
+			// Core stamps the name the caller asked for before any plugin runs; these requests are
+			// built without that pass, so the stamp is made here.
+			ctx := presentCtx("sk-bf-route")
+			ctx.SetValue(schemas.BifrostContextKeyRequestedModel, loader)
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, route.req)
+			require.NoError(t, err)
+			assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
+			assert.Contains(t, shortCircuit.Error.Error.Message, "not listed for this virtual key")
+		})
+	}
+}
+
 // An advisor model with a budget or rate limit of its own is refused rather than checked and never
 // charged: the request's usage is charged against the executor model's limits alone.
 func TestPreLLMHookRefusesServerToolModelsWithTheirOwnLimits(t *testing.T) {
