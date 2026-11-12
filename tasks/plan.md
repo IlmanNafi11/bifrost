@@ -130,7 +130,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
 
 ### Phase 5: Handler + config
 
-- [ ] **Task 11: Validasi `listed_models` di handler VK create/update**
+- [x] **Task 11: Validasi `listed_models` di handler VK create/update**
   - Description: `CreateVirtualKeyRequest`/`UpdateVirtualKeyRequest` dapat field `ListedModels []ListedModelEntryBody{Provider, Model, RoutingRule}`; validasi pra-transaksi di `createVirtualKey` (governance.go:2160) & `updateVirtualKey` (2610): model ⊆ `allowed_models` provider-nya (tidak dikenal → 400), rule ada + scope cocok (dari `GetRoutingRules`), cap 100 → 400, `*` ditolak. Map ke `TableListedModelEntry` (rule name → ID di handler, bukan config load).
   - Acceptance: create/update dengan entry valid diterima; model di luar `allowed_models`/tidak dikenal → 400; rule tidak ada/scope tidak cocok → 400; >100 → 400; `GET /api/models` (dashboard) tetap penuh.
   - Verify: `cd transports/bifrost-http && GOWORK=off go test ./handlers/ -run 'VirtualKey|ListedModels'`.
