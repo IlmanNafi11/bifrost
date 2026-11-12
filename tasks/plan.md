@@ -58,7 +58,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: T1. Files: `framework/configstore/migrations.go`.
   - Scope: S (1).
 
-- [ ] **Task 3: Hash + `UpdateVirtualKey` allowlist**
+- [x] **Task 3: Hash + `UpdateVirtualKey` allowlist**
   - Description: `GenerateVirtualKeyHash` menulis `listed_models` hanya saat non-empty, entry di-sort + JSON-deterministik (pola `metadata` clientconfig.go:1452-1477); `UpdateVirtualKey` (rdb.go:4589) conditionally append `"listed_models"` ke `columns` bila non-nil (pola `metadata` rdb.go:4630-4634 pointer-decide).
   - Acceptance: hash berubah saat `listed_models` berubah, stabil saat di-restart; VK tanpa `listed_models` hash-nya tidak berubah; `UpdateVirtualKey` dengan `ListedModels:nil` mempertahankan nilai stored.
   - Verify: `cd framework && GOWORK=off go test ./configstore/ -run 'VirtualKeyHash|ListedModels'`.
@@ -66,7 +66,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Scope: S (3).
 
 ### Checkpoint: Persistence
-- [ ] `go build ./core/... ./framework/...` dan test configstore hijau
+- [x] `go build ./core/... ./framework/...` dan test configstore hijau
 - [ ] **Review human — migration baru (spec "Ask first")**
 
 ### Phase 2: Grant (core/schemas + framework/grant)

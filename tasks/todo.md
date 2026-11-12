@@ -16,14 +16,14 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `framework/configstore/migrations.go`
   - Deps: T1 · Size: S
 
-- [ ] **T3 — Hash + `UpdateVirtualKey` allowlist**
+- [x] **T3 — Hash + `UpdateVirtualKey` allowlist**
   - Acceptance: hash berubah saat listed berubah; stabil restart; tanpa listed hash tak berubah; `ListedModels:nil` preserves stored.
   - Verify: `cd framework && GOWORK=off go test ./configstore/ -run 'VirtualKeyHash|ListedModels'`
   - Files: `framework/configstore/clientconfig.go`, `framework/configstore/rdb.go`, test terkait
   - Deps: T1 · Size: S
 
 ### Checkpoint: Persistence
-- [ ] build + test configstore hijau
+- [x] build + test configstore hijau
 - [ ] Review human — migration baru (wajib)
 
 ## Phase 2: Grant (core/schemas + framework/grant)
