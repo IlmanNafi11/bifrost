@@ -1749,3 +1749,123 @@ func TestIsRelayAllowed(t *testing.T) {
 		t.Fatalf("a union scope with the endpoint allows it")
 	}
 }
+
+// listedPermit builds a permit whose provider permit for provider lists exactly models, layered on
+// top of an unrestricted AllowedModels so only the listing restricts.
+func listedPermit(permitType PermitType, id string, provider string, models []string, rules []string) *Permit {
+	opts := []PermitOption{}
+	if rules != nil {
+		opts = append(opts, WithListedRules(rules))
+	}
+	return NewPermit(permitType, id, "Listed", true, false, []schemas.ProviderPermit{{
+		Provider:      provider,
+		AllowedModels: []string{"*"},
+		KeyIDs:        []string{"*"},
+		ListedModels:  models,
+	}}, nil, opts...)
+}
+
+// ModelListed is the narrower question the listing gate asks: IsModelAllowed says a model may be
+// reached, ModelListed says the caller was told it exists. A permit without the block leaves the
+// restriction off, which is every permit that predates it.
+func TestAccess_ModelListed(t *testing.T) {
+	t.Run("no block leaves the listing unrestricted", func(t *testing.T) {
+		access := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")), nil, "", nil)
+		assert.True(t, access.ModelListed("openai", "gpt-4o"))
+		assert.True(t, access.ModelListed("openai", "anything-else"))
+	})
+
+	t.Run("a listing permits exactly what it names", func(t *testing.T) {
+		access := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4"}, nil)), nil, "", nil)
+		assert.True(t, access.ModelListed("openai", "gpt-5.4"))
+		assert.False(t, access.ModelListed("openai", "gpt-4o"))
+	})
+
+	t.Run("deny-all lists no model at all", func(t *testing.T) {
+		access := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{}, []string{"rule-coding"})), nil, "", nil)
+		assert.False(t, access.ModelListed("openai", "gpt-5.4"))
+		assert.False(t, access.ModelListed("openai", "anything"))
+	})
+
+	t.Run("a provider the block does not mention keeps its own answer", func(t *testing.T) {
+		base := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, false, []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}, ListedModels: []string{"gpt-5.4"}},
+			{Provider: "anthropic", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}},
+		}, nil)
+		access := NewAccess(held(base), nil, "", nil)
+		assert.False(t, access.ModelListed("openai", "gpt-4o"))
+		assert.True(t, access.ModelListed("anthropic", "claude-sonnet-5"), "a provider with no listing of its own is unrestricted")
+	})
+
+	t.Run("a listing never widens IsModelAllowed", func(t *testing.T) {
+		// AllowedModels is the outer bound: naming a model in the listing that allowed_models refuses
+		// must not make it callable.
+		base := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, false, []schemas.ProviderPermit{{
+			Provider:      "openai",
+			AllowedModels: []string{"gpt-4o"},
+			KeyIDs:        []string{"*"},
+			ListedModels:  []string{"gpt-5.4"},
+		}}, nil)
+		access := NewAccess(held(base), nil, "", nil)
+		assert.False(t, access.IsModelAllowed("openai", "gpt-5.4"), "the listing cannot add a model allowed_models refuses")
+		assert.False(t, access.ModelListed("openai", "gpt-5.4"), "nor may it be listed as callable")
+	})
+
+	t.Run("caller permits are read as one, listing included", func(t *testing.T) {
+		// The bases are a union everywhere else in this package, and the listing follows: what any
+		// permit the caller holds lists, they were shown. Narrowing happens across the scoping permit,
+		// under Intersect, which the composition test below covers.
+		wide := permitWithProviders(PermitVirtualKey, "vk-wide", "Wide", "openai")
+		narrow := listedPermit(PermitVirtualKey, "vk-narrow", "openai", []string{"gpt-5.4"}, nil)
+		access := NewAccess(held(wide, narrow), nil, "", nil)
+		assert.True(t, access.ModelListed("openai", "gpt-5.4"))
+		assert.True(t, access.ModelListed("openai", "gpt-4o"), "a permit that lists nothing of its own does not narrow another permit's listing")
+	})
+
+	t.Run("a request that may not use the pair is not listed either", func(t *testing.T) {
+		access := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4"}, nil)), nil, "", nil)
+		assert.False(t, access.ModelListed("anthropic", "claude-sonnet-5"), "no provider permit, no listing")
+	})
+
+	t.Run("a nil access lists nothing", func(t *testing.T) {
+		var access *Access
+		assert.False(t, access.ModelListed("openai", "gpt-5.4"))
+	})
+}
+
+// ListedRules is the rule half of the same block: the caller asks for a rule by name and the routing
+// layer resolves it, so only the IDs are carried here.
+func TestPermit_ListedRules(t *testing.T) {
+	assert.Nil(t, permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai").ListedRules(), "a permit that lists no rules says so with nil")
+
+	withRules := listedPermit(PermitVirtualKey, "vk1", "openai", nil, []string{"rule-coding", "rule-cheap"})
+	assert.Equal(t, []string{"rule-coding", "rule-cheap"}, withRules.ListedRules())
+
+	var nilPermit *Permit
+	assert.Nil(t, nilPermit.ListedRules())
+}
+
+// WithListedRules must deep-copy, the way every other list option does: a resolver that keeps its
+// slice cannot change what an attempt was admitted under.
+func TestWithListedRulesCopies(t *testing.T) {
+	rules := []string{"rule-coding"}
+	permit := listedPermit(PermitVirtualKey, "vk1", "openai", nil, rules)
+	rules[0] = "rule-other"
+	assert.Equal(t, []string{"rule-coding"}, permit.ListedRules())
+}
+
+// A listing carried on the scoping permit narrows the composed answer under Intersect and widens it
+// under Union, exactly like the model lists it sits beside.
+func TestAccess_ModelListedComposes(t *testing.T) {
+	base := listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4"}, nil)
+	scoping := listedPermit("other", "o1", "openai", []string{"gpt-4o"}, nil)
+
+	unionAccess := NewAccess(held(base), scoping, Union, nil)
+	assert.True(t, unionAccess.ModelListed("openai", "gpt-5.4"))
+	assert.True(t, unionAccess.ModelListed("openai", "gpt-4o"))
+	assert.False(t, unionAccess.ModelListed("openai", "o3"))
+
+	intersectAccess := NewAccess(held(base), scoping, Intersect, nil)
+	assert.False(t, intersectAccess.ModelListed("openai", "gpt-5.4"), "the scope did not list it")
+	assert.False(t, intersectAccess.ModelListed("openai", "gpt-4o"), "the base did not list it")
+}

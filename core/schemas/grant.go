@@ -123,6 +123,13 @@ type Permit interface {
 	// RelayPermits is every relay the permit allows by name.
 	RelayPermits() []string
 
+	// ListedRules is every routing rule the permit names as callable by its holder, by stable rule
+	// ID. A rule listed here is what a source means when it says "this holder may call 'coding'": the
+	// caller asks for the rule by name and the routing layer resolves it, so the name never has to
+	// match anything on this side. nil means the source lists no rules, which is every permit that
+	// does not set it. See ProviderPermit.ListedModels for the model half of the same listing.
+	ListedRules() []string
+
 	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
 	// provider permit for. It coexists with ProviderPermits: a provider the permit lists still has
 	// that permit's model, key, and weight rules applied; a provider it lists none for is allowed with
@@ -158,6 +165,15 @@ type Access interface {
 	// lose to nothing: a permit that blacklists the model does not permit it, whatever its
 	// allowed-models list says. An empty model asks about the provider alone.
 	IsModelAllowed(provider string, model string) bool
+	// ModelListed reports whether the request may call model on provider under the listing
+	// restriction, which is narrower than IsModelAllowed: IsModelAllowed answers "may this reach the
+	// model at all", this answers "was the caller told this specific model exists". nil on every
+	// deciding permit means no source restricts its listing and the answer is true; an empty list
+	// means the holder was shown no model of that provider and may call none of them by name.
+	//
+	// A request that may not use the pair at all is not listed either: this never widens what
+	// IsModelAllowed refuses.
+	ModelListed(provider string, model string) bool
 	// AllowsEveryModel reports whether the request may use any model at all on provider: every
 	// permit deciding for the provider allows all of its models and blacklists none. It is the
 	// question to ask when a request will run models it does not name, such as a batch defined by
@@ -250,7 +266,14 @@ type ProviderPermit struct {
 	Provider          string    // provider name, as configured
 	AllowedModels     WhiteList // ["*"] allows all models; empty allows none (deny by default)
 	BlacklistedModels BlackList // blocked models; wins over AllowedModels
-	KeyIDs            WhiteList // ["*"] allows all keys of the provider; empty allows none.
+	// ListedModels is the narrower answer to "what may this holder see and call", layered on top of
+	// AllowedModels rather than replacing it: a model has to pass both. nil means the source says
+	// nothing and the listing restriction is off, which is what every permit that does not set it
+	// carries; an empty list says the holder may call no model at all, only the routing rules its
+	// permit names (see Permit.ListedRules). A listed model still has to be in AllowedModels: this
+	// list can only narrow, never widen.
+	ListedModels WhiteList
+	KeyIDs       WhiteList // ["*"] allows all keys of the provider; empty allows none.
 	//                             Composes with the other side's list, but only where that side also
 	//                             authorizes the request for the provider: a permit the request is not
 	//                             proceeding on does not get to say which keys serve it.

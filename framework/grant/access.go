@@ -123,6 +123,51 @@ func (a *Access) IsModelAllowed(provider string, model string) bool {
 	return a.compose(base, a.permitAllowsModel(a.scoping, provider, model))
 }
 
+// ModelListed implements schemas.Access. The listing is narrower than the model permission it sits
+// on, so it is a two-step answer: the pair has to be callable at all, and then every permit deciding
+// for the provider that says something about its listing has to list the model. A permit that says
+// nothing (nil ListedModels) does not narrow, which is what keeps the feature inert for every permit
+// that predates it; an empty list narrows to nothing.
+//
+// The permit set is the same anyBase fold IsModelAllowed uses, so a listing never outlives the
+// permission it is layered on: a model allowed_models refuses is not listed even if the block names
+// it.
+func (a *Access) ModelListed(provider string, model string) bool {
+	if a == nil {
+		return false
+	}
+	if !a.IsModelAllowed(provider, model) {
+		return false
+	}
+	if model == "" {
+		// No name to look up in a listing; the provider question is IsProviderAllowed's.
+		return true
+	}
+	base := a.anyBase(func(p schemas.Permit) bool { return permitListsModel(p, provider, model) })
+	if a.scoping == nil {
+		return base
+	}
+	return a.compose(base, permitListsModel(a.scoping, provider, model))
+}
+
+// permitListsModel reports whether the permit lists model on provider. A permit that holds no
+// provider permit for the provider is outside the listing question (the model permission has already
+// settled that it may not be reached), so it does not narrow here either.
+func permitListsModel(p schemas.Permit, provider string, model string) bool {
+	if isNilPermit(p) {
+		return false
+	}
+	for _, pp := range p.ProviderPermits() {
+		if pp.Provider != provider || pp.ListedModels == nil {
+			continue
+		}
+		if !pp.ListedModels.Contains(model) {
+			return false
+		}
+	}
+	return true
+}
+
 // AllowsEveryModel implements schemas.Access.
 func (a *Access) AllowsEveryModel(provider string) bool {
 	if a == nil {

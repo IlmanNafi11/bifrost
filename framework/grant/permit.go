@@ -88,6 +88,7 @@ type Permit struct {
 	allowAllProviders bool
 
 	relayPermits []string
+	listedRules  []string
 }
 
 // PermitOption configures a Permit at construction. Options keep NewPermit's required arguments
@@ -110,6 +111,12 @@ func WithRelayPermits(endpointNames []string) PermitOption {
 // still applies that permit's rules. See schemas.Permit.AllowsAllProviders.
 func WithAllowAllProviders(allow bool) PermitOption {
 	return func(p *Permit) { p.allowAllProviders = allow }
+}
+
+// WithListedRules names the routing rules the permit's holder may call, by stable rule ID. See
+// schemas.Permit.ListedRules for what a listed rule buys; a nil slice lists none.
+func WithListedRules(ruleIDs []string) PermitOption {
+	return func(p *Permit) { p.listedRules = slices.Clone(ruleIDs) }
 }
 
 // NewPermit builds a Permit. See schemas.Permit for what each value means. The lists are deep
@@ -148,6 +155,7 @@ func cloneProviderPermits(providerPermits []schemas.ProviderPermit) []schemas.Pr
 	for i := range cloned {
 		cloned[i].AllowedModels = slices.Clone(cloned[i].AllowedModels)
 		cloned[i].BlacklistedModels = slices.Clone(cloned[i].BlacklistedModels)
+		cloned[i].ListedModels = slices.Clone(cloned[i].ListedModels)
 		cloned[i].KeyIDs = slices.Clone(cloned[i].KeyIDs)
 		if cloned[i].Weight != nil {
 			weight := *cloned[i].Weight
@@ -238,6 +246,14 @@ func (p *Permit) RelayPermits() []string {
 		return nil
 	}
 	return slices.Clone(p.relayPermits)
+}
+
+// ListedRules implements schemas.Permit. See ProviderPermits for why this returns a copy.
+func (p *Permit) ListedRules() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Clone(p.listedRules)
 }
 
 // The rules below are written against schemas.Permit rather than *Permit, so the fold asks every
