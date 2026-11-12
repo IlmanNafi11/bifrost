@@ -6,6 +6,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { ModelTestButton } from "@/components/modelTestButton";
 import { ModelSelector } from "@/components/ui/modelSelector";
 import { ProviderSelector, type ProviderSelectorOption } from "@/components/ui/providerSelector";
 import type { RoutingFallbackFormData } from "@/lib/types/routingRules";
@@ -32,6 +33,9 @@ interface FallbackRowProps {
 function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUpdate, onRemove }: FallbackRowProps) {
 	const { t } = useTranslation("models");
 	const provider = fallback.provider || "";
+	// Nothing to probe without a provider and a concrete model; a wildcard row
+	// matches whatever arrives, so no single request can stand in for it.
+	const probeable = !!provider && !!fallback.model && !fallback.model.includes("*");
 
 	return (
 		<div className="space-y-2 rounded-lg border p-3" data-testid={`routing-fallback-${index}`}>
@@ -60,6 +64,7 @@ function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUp
 						className="!h-9 !min-h-9 w-full"
 					/>
 				</div>
+				{probeable && <ModelTestButton provider={provider} model={fallback.model} keyId={fallback.key_id} className="h-9 px-2" />}
 				<Button
 					type="button"
 					variant="ghost"

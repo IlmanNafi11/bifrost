@@ -9,6 +9,7 @@ import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelec
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ModelTestButton } from "@/components/modelTestButton";
 import { ModelSelector } from "@/components/ui/modelSelector";
 import { ProviderSelector, type ProviderSelectorOption } from "@/components/ui/providerSelector";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -831,6 +832,14 @@ function TargetRow({ target, index, referencedProviderOptions, allKeys, showRemo
 								ariaLabelledBy={`routing-target-${index}-model-label`}
 							/>
 						</div>
+						{target.provider && target.model && (
+							<ModelTestButton
+								provider={target.provider}
+								model={target.model}
+								keyId={target.key_id}
+								className="h-9 px-2"
+							/>
+						)}
 						{target.model && (
 							<Button
 								type="button"

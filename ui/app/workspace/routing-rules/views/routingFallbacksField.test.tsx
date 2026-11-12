@@ -17,6 +17,7 @@ vi.mock("@/lib/store/apis/providersApi", () => ({
 	useGetProvidersQuery: () => ({ data: [] }),
 	useGetModelsQuery: () => ({ data: { models: [], pagination: {} }, isLoading: false }),
 	useGetBaseModelsQuery: () => ({ data: [], isLoading: false }),
+	useTestModelMutation: () => [vi.fn(), { isLoading: false }],
 }));
 
 beforeAll(async () => {
@@ -83,5 +84,22 @@ describe("RoutingFallbacksField", () => {
 
 		expect(html).toContain("No fallbacks configured");
 		expect(html).not.toContain("-handle");
+	});
+
+	// A fallback row can be probed as soon as it names a provider and a model: the
+	// row is what traffic falls to, so testing it is the point. A wildcard model
+	// matches whatever arrives and cannot stand in for one request.
+	it("offers a probe once the row names a provider and a model", () => {
+		const html = renderField({
+			fallbacks: [
+				{ provider: "openai", model: "gpt-4o-mini", key_id: "" },
+				{ provider: "openai", model: "", key_id: "" },
+				{ provider: "openai", model: "gpt-4o*", key_id: "" },
+			],
+			ids: ["id-a", "id-b", "id-c"],
+		});
+
+		expect(html).toContain('aria-label="Test openai/gpt-4o-mini"');
+		expect(html.match(/data-testid="model-test-button"/g) ?? []).toHaveLength(1);
 	});
 });
