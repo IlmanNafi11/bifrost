@@ -51,6 +51,9 @@ export interface ModelDetails {
 	architecture?: unknown;
 	additional_attributes?: Record<string, string>;
 	accessible_by_keys?: string[];
+	// Catalog mode the model is served under (chat, embedding, ...), which is also
+	// the mode POST /api/models/test probes it in. Absent means the chat default.
+	mode?: string;
 	// Post-override value of each displayed cost, present only for the fields
 	// the applied override actually changes — render those struck through.
 	overridden_pricing?: ModelOverriddenPricing;

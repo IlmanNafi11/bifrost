@@ -531,3 +531,38 @@ func TestModelProbeModeDispatch_JobCreatingUnaryModeReportsLatencyOnly(t *testin
 	assert.Nil(t, response.TTFTMs, "video_generation is unary and must not report TTFT")
 	assert.Equal(t, int32(1), jobs.Load(), "the probe must create exactly one job")
 }
+
+// TestListModelDetails_ReportsProbeMode pins that the catalog listing names each
+// row's mode, which is what lets the model catalog disable a Test button for a
+// mode the probe cannot exercise before the operator clicks it. A row with no
+// datasheet entry reports the chat default, matching how it is probed.
+func TestListModelDetails_ReportsProbeMode(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := providerHandlerForTest(
+		schemas.OpenAI,
+		[]schemas.Key{{ID: "key-a"}},
+		[]string{"gpt-4o-mini", "text-embedding-3-small", "brand-new-model"},
+		[]string{"gpt-4o-mini", "text-embedding-3-small", "brand-new-model"},
+	)
+	h.inMemoryStore.ModelCatalog = probeCatalog(t, map[string]string{
+		"openai/gpt-4o-mini":           "chat",
+		"openai/text-embedding-3-small": "embedding",
+	})
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=10")
+	h.listModelDetails(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var resp ListModelDetailsResponse
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &resp))
+	modes := make(map[string]string, len(resp.Models))
+	for _, model := range resp.Models {
+		modes[model.Name] = model.Mode
+	}
+	assert.Equal(t, "chat", modes["gpt-4o-mini"])
+	assert.Equal(t, "embedding", modes["text-embedding-3-small"])
+	assert.Equal(t, "chat", modes["brand-new-model"], "a row with no datasheet entry is probed as chat")
+}

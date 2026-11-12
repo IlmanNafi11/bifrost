@@ -751,6 +751,9 @@ ModelDetailsResponse:
       format: double
     architecture:
       $ref: '#/Architecture'
+    mode:
+      type: string
+      description: Catalog mode the model is served under (chat, embedding, ...), which is also the mode POST /api/models/test probes it in. Rows with no datasheet entry report chat.
     additional_attributes:
       type: object
       additionalProperties:
@@ -759,6 +762,62 @@ ModelDetailsResponse:
       type: array
       items:
         type: string
+
+ModelTestRequest:
+  type: object
+  description: One model to probe.
+  required:
+    - provider
+    - model
+  properties:
+    provider:
+      type: string
+      description: Provider that serves the model.
+    model:
+      type: string
+      description: Model to probe, as the provider names it.
+    key_id:
+      type: string
+      description: Provider key to probe with. Omitted means the request selects a key exactly as normal traffic does.
+
+ModelTestResponse:
+  type: object
+  description: >-
+    Probe verdict. A provider that refuses the call is a measurement, so it
+    comes back as ok false with the error it produced rather than as an HTTP
+    error on the endpoint.
+  properties:
+    ok:
+      type: boolean
+    mode:
+      type: string
+      description: Catalog mode that was probed.
+    provider:
+      type: string
+    model:
+      type: string
+    ttft_ms:
+      type: integer
+      format: int64
+      description: Time to the first chunk carrying output. Streaming modes only; never present for a unary mode or a failed probe.
+    total_ms:
+      type: integer
+      format: int64
+      description: Time to the end of the probe.
+    status:
+      type: integer
+      description: HTTP status the provider answered with when it refused the call.
+    key_id:
+      type: string
+      description: Provider key that served the probe.
+    key_name:
+      type: string
+      description: Name of the provider key that served the probe.
+    note:
+      type: string
+    error:
+      type: string
+      description: Provider error or `timeout setelah 60s`, present when ok is false.
 
 ListModelsResponse:
   type: object

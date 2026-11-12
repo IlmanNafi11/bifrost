@@ -902,6 +902,10 @@ type ModelDetailsResponse struct {
 	IsDeprecated         bool                  `json:"is_deprecated,omitempty"`
 	AdditionalAttributes map[string]string     `json:"additional_attributes,omitempty"`
 	AccessibleByKeys     []string              `json:"accessible_by_keys,omitempty"`
+	// Mode is the catalog mode the model is served under (chat, embedding, ...),
+	// which is also the mode POST /api/models/test probes it in. Rows with no
+	// datasheet entry report the chat default, the same default the probe applies.
+	Mode string `json:"mode,omitempty"`
 
 	// OverriddenPricing carries the post-override value of each cost field the
 	// UI displays, and only for fields the applied override actually changes —
@@ -1084,6 +1088,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		details := ModelDetailsResponse{
 			Name:     model.Name,
 			Provider: string(model.Provider),
+			Mode:     defaultCatalogPricingMode,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys
@@ -1109,6 +1114,7 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		if capabilities != nil && capabilities.Mode != "" {
 			mode = capabilities.Mode
 		}
+		details.Mode = mode
 		overrides := modelCatalog.GetCatalogPricingOverrides(model.Name, model.Provider, mode)
 		if len(overrides.Matching) > 0 {
 			details.PricingOverrideIDs = make([]string, 0, len(overrides.Matching))

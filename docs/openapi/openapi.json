@@ -44040,6 +44040,10 @@
                               }
                             }
                           },
+                          "mode": {
+                            "type": "string",
+                            "description": "Catalog mode the model is served under (chat, embedding, ...), which is also the mode POST /api/models/test probes it in. Rows with no datasheet entry report chat."
+                          },
                           "additional_attributes": {
                             "type": "object",
                             "additionalProperties": {
@@ -44059,6 +44063,133 @@
                       "type": "integer"
                     }
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/models/test": {
+      "post": {
+        "operationId": "testModelManagement",
+        "x-mint": {
+          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `ModelProvider:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Probe a model",
+        "description": "Sends one real request to the provider to check that the model answers with\nthe configured credentials, and measures it: time to the first token for a\nstreaming mode, total latency for a unary one. The probe runs under the same\nrouting, key selection and provider converter as normal traffic.\n\nA probe is hidden from logs, cost, budgets and provider stats. A provider\nthat refuses the call, or a probe that runs past 60 seconds, returns HTTP 200\nwith `ok: false` and the reason; only a malformed request (400) or a probe\nthat cannot be started at all (500) is an HTTP error.\n",
+        "tags": [
+          "Providers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "One model to probe.",
+                "required": [
+                  "provider",
+                  "model"
+                ],
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "description": "Provider that serves the model."
+                  },
+                  "model": {
+                    "type": "string",
+                    "description": "Model to probe, as the provider names it."
+                  },
+                  "key_id": {
+                    "type": "string",
+                    "description": "Provider key to probe with. Omitted means the request selects a key exactly as normal traffic does."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Probe verdict, successful or not",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Probe verdict. A provider that refuses the call is a measurement, so it comes back as ok false with the error it produced rather than as an HTTP error on the endpoint.",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "mode": {
+                      "type": "string",
+                      "description": "Catalog mode that was probed."
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "ttft_ms": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Time to the first chunk carrying output. Streaming modes only; never present for a unary mode or a failed probe."
+                    },
+                    "total_ms": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Time to the end of the probe."
+                    },
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status the provider answered with when it refused the call."
+                    },
+                    "key_id": {
+                      "type": "string",
+                      "description": "Provider key that served the probe."
+                    },
+                    "key_name": {
+                      "type": "string",
+                      "description": "Name of the provider key that served the probe."
+                    },
+                    "note": {
+                      "type": "string"
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Provider error or `timeout setelah 60s`, present when ok is false."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }

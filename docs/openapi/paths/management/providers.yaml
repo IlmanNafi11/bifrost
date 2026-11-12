@@ -689,6 +689,52 @@ models-details:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+models-test:
+  post:
+    operationId: testModelManagement
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `ModelProvider:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Probe a model
+    description: |
+      Sends one real request to the provider to check that the model answers with
+      the configured credentials, and measures it: time to the first token for a
+      streaming mode, total latency for a unary one. The probe runs under the same
+      routing, key selection and provider converter as normal traffic.
+
+      A probe is hidden from logs, cost, budgets and provider stats. A provider
+      that refuses the call, or a probe that runs past 60 seconds, returns HTTP 200
+      with `ok: false` and the reason; only a malformed request (400) or a probe
+      that cannot be started at all (500) is an HTTP error.
+    tags:
+      - Providers
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/providers.yaml#/ModelTestRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Probe verdict, successful or not
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/providers.yaml#/ModelTestResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
 models-parameters:
   get:
     operationId: getModelParameters
