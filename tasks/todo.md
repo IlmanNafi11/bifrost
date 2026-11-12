@@ -95,7 +95,7 @@ Spec: `docs/specs/SPEC-model-test-probe.md` · Plan: `tasks/plan.md`
   - Deps: T8, T10 · Size: S
 
 ### Checkpoint: UI
-- [ ] `typecheck` + `lint` + `i18n:check` + `build` hijau
+- [x] `typecheck` + `lint` + `i18n:check` + `build` hijau
 - [ ] Manual `make dev`: tiga permukaan benar; dua baris diprobe bersamaan, toast sesuai urutan selesai
 
 ## Phase 4: Verification & Docs
@@ -106,13 +106,14 @@ Spec: `docs/specs/SPEC-model-test-probe.md` · Plan: `tasks/plan.md`
   - Files: `tests/e2e/api/collections/provider-harness.json`
   - Deps: T5, T6 · Size: S
 
-- [ ] **T15 — E2E Playwright**
+- [x] **T15 — E2E Playwright**
   - Acceptance: `make run-e2e FLOW=routing-rules` dan `FLOW=model-catalog` hijau.
+  - Catatan: satu test drag-cancel (`should restore the original order when a drag is cancelled with Escape`) sudah merah sebelum pekerjaan ini (dibuktikan di worktree 95fc09cd3); crash 500-nya diperbaiki di commit 0ab9528c1, sisa perilaku Escape-menutup-sheet adalah bug lama.
   - Verify: kedua target di atas.
   - Files: `tests/e2e/features/routing-rules/pages/routing-rules.page.ts`, `.../routing-rules.spec.ts`, `tests/e2e/features/model-catalog/model-catalog.spec.ts`
   - Deps: T11, T13 · Size: M
 
-- [ ] **T16 — Docs**
+- [x] **T16 — Docs**
   - Acceptance: routing.mdx menjelaskan tombol Test, TTFT vs Latency, dan bahwa probe tidak tercatat di logs/biaya.
   - Verify: review manual; `docs/openapi/spec_invariants_test.py` bila OpenAPI tersentuh.
   - Files: `docs/features/governance/routing.mdx`
