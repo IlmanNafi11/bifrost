@@ -139,6 +139,6 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Deps: T15 · Size: XS
 
 ### Checkpoint: Complete
-- [ ] Semua Success Criteria (1-12) terpenuhi
-- [ ] make test / test-framework / test-plugins / test-governance + UI checks hijau
-- [ ] Siap review
+- [x] Semua Success Criteria (1-12) terpenuhi — #6 (D9) dipin di `TestListModels_UnfilteredListingSkipsCallerAccess` (kedua rute), di-falsifikasi lebih dulu
+- [x] make test / test-framework / test-plugins / test-governance + UI checks hijau — kecuali `semanticcache` (butuh embedding key live) dan flake load-sensitive `logstore`/`logging` yang lolos saat diisolasi
+- [x] Siap review
