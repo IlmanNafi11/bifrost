@@ -61,7 +61,7 @@ Spec: `docs/specs/SPEC-vk-listed-models.md` · Plan: `tasks/plan.md`
   - Files: `plugins/governance/resolver.go`, `resolver_test.go`
   - Deps: T6, T7 · Size: M
 
-- [ ] **T9 — Wiring invalidation di server**
+- [x] **T9 — Wiring invalidation di server**
   - Acceptance: edit/hapus rule refresh cache governance; tanpa plugin → warn, routing path tetap.
   - Verify: `cd transports/bifrost-http && GOWORK=off go test ./server/ -run RoutingRule`
   - Files: `transports/bifrost-http/server/server.go`, `routing_test.go`

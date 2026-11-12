@@ -108,7 +108,7 @@ Build order: T1 → T2/T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → 
   - Deps: T6, T7. Files: `plugins/governance/resolver.go`, `resolver_test.go`.
   - Scope: M (2).
 
-- [ ] **Task 9: Wiring invalidation di server**
+- [x] **Task 9: Wiring invalidation di server**
   - Description: `ReloadRoutingRule`/`RemoveRoutingRule` (server.go:1493/1510) menambahkan panggilan ke governance store (via `getGovernancePlugin().GetGovernanceStore()` atau method baru `BaseGovernancePlugin`), memanggil `RoutingRuleStore.Reload/Remove` sebelum/bersamaan routing plugin.
   - Acceptance: edit/hapus rule memicu refresh cache governance; tanpa governance plugin → error tidak menelan routing path (warn).
   - Verify: `cd transports/bifrost-http && GOWORK=off go test ./server/ -run 'RoutingRule'` (atau test handler routing).
