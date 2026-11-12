@@ -3,6 +3,7 @@ package governance
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -171,14 +172,21 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	}
 
 	// The listing gate: a key's listed_models block narrows what it may call beyond allowed_models,
-	// and the routing rules it names are the only way past it for a model the block does not list.
-	// It reads the model the caller asked for, not the one the request ended up on: a rule rewrite
-	// replaces the model, and the name it replaced is what the caller was allowed to ask for.
+	// and a routing rule the block names is the only way past it for a model the block does not
+	// list. It reads the model the caller asked for, not the one the request ended up on: a rule
+	// rewrite replaces the model, and the name it replaced is what the caller was allowed to ask for.
+	//
+	// The rule has to be listed before its definition is consulted. The rule cache holds every
+	// enabled, in-scope rule of the deployment, so asking it alone would open the targets of any
+	// rule a caller could name, which is a wider grant than the block makes. A listed rule then has
+	// to still reach the model the request landed on, so a rewrite cannot carry the request past
+	// the rule's own targets and fallbacks.
 	if !skipModelCheck {
 		requested := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestedModel)
 		if requested != "" && !access.ModelListed(string(provider), requested) {
 			rules := r.store.RoutingRules()
-			if rules == nil || !rules.AllowsRequest(ctx, requested, string(provider), model) {
+			listed := slices.Contains(access.ListedRules(), requested)
+			if !listed || rules == nil || !rules.AllowsRequest(ctx, requested, string(provider), model) {
 				return &EvaluationResult{
 					Decision: DecisionModelBlocked,
 					Reason:   denialReason(fmt.Sprintf("Model '%s' is not listed for this virtual key", requested), access.DeniedPermitsForModel(string(provider), requested)),

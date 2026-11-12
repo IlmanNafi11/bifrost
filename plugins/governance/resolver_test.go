@@ -1712,6 +1712,45 @@ func TestBudgetResolver_EvaluateRequest_ListedModelsDenyAll(t *testing.T) {
 	assertDecision(t, DecisionModelBlocked, evaluateVirtualKey(resolver, ctx, "sk-bf-deny", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false))
 }
 
+// A rule opens its targets only when the key listed that rule. Governance's rule cache holds every
+// enabled, in-scope rule of the deployment, so consulting it alone would open the targets of any
+// rule a caller could name; the key's own list is what makes a rule callable, and the cache then
+// answers whether that rule still reaches the model the request landed on.
+func TestBudgetResolver_EvaluateRequest_ListedModelsUnlistedRuleIsRefused(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-rule", "sk-bf-rule", "Rule Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+		buildProviderConfig("deepseek", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RoutingRules: []configstoreTables.TableRoutingRule{{
+			ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+			CelExpression: "true",
+			Targets: []configstoreTables.TableRoutingTarget{{
+				Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1,
+			}},
+		}},
+	}, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	// The rule exists, is enabled, is in scope and reaches the final model. The key lists a model
+	// only, so naming the rule is refused before its definition is consulted.
+	ctx := resolverCtx(store, "sk-bf-rule")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+	result := evaluateVirtualKey(resolver, ctx, "sk-bf-rule", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionModelBlocked, result)
+	assert.Contains(t, result.Reason, "not listed for this virtual key")
+
+	// A name that is neither listed nor a rule stays refused the same way.
+	ctx = resolverCtx(store, "sk-bf-rule")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o")
+	assertDecision(t, DecisionModelBlocked, evaluateVirtualKey(resolver, ctx, "sk-bf-rule", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false))
+}
+
 // A key without a listed_models block keeps the behaviour it had before the feature existed: the
 // gate is off, whatever the access says.
 func TestBudgetResolver_EvaluateRequest_ListedModelsAbsentIsOff(t *testing.T) {
@@ -1750,4 +1789,60 @@ func TestBudgetResolver_EvaluateRequest_ListedModelsAppliesToProbes(t *testing.T
 	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o")
 	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
 	assertDecision(t, DecisionModelBlocked, evaluateVirtualKey(resolver, ctx, "sk-bf-probe", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false))
+}
+
+// BenchmarkPreLLMHookListedModels measures the governance pre-hook on the three shapes a key's
+// listed_models block can take. The common case is a key that predates the block: its access
+// carries no listing, and the gate answers from the model permission it already had. A listed key
+// pays for one listing lookup, and a rule entry adds the rule-cache ask that decides whether the
+// rule still reaches the model the request landed on.
+func BenchmarkPreLLMHookListedModels(b *testing.B) {
+	cases := []struct {
+		name  string
+		entry []configstoreTables.TableListedModelEntry
+		model string
+	}{
+		{"no_listing", nil, "gpt-5.4"},
+		{"listed_model", []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, "gpt-5.4"},
+		{"listed_rule", []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}}, "coding"},
+	}
+	for _, tc := range cases {
+		vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
+		vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+			buildProviderConfig("openai", []string{"*"}),
+		}
+		vk.ListedModels = tc.entry
+		logger := NewMockLogger()
+		store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			RoutingRules: []configstoreTables.TableRoutingRule{{
+				ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+				CelExpression: "true",
+				Targets: []configstoreTables.TableRoutingTarget{{
+					Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-5.4"), Weight: 1,
+				}},
+			}},
+		}, nil, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.Cleanup(func() { _ = plugin.Cleanup() })
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				ctx := presentCtx("sk-bf-listed")
+				ctx.SetValue(schemas.BifrostContextKeyRequestedModel, tc.model)
+				req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: tc.model, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("hi")}}},
+				}}
+				if _, _, err := plugin.PreLLMHook(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
