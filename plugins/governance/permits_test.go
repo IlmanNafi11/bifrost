@@ -1880,3 +1880,61 @@ func TestFilterModelsForAccess_ListedModelsDenyAllAndRuleOnly(t *testing.T) {
 		assert.Equal(t, []string{"coding"}, list(t, build(t, []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}})))
 	})
 }
+
+// A block replaces the provider's page with the whole listing the caller may see, so the provider's
+// cursor points past a page that no longer holds what it withheld. Handing it back would make a
+// client ask for a page the block already answered whole, and read the empty answer as truncation.
+func TestPostLLMHook_ListedModelsDropsTheProviderPageToken(t *testing.T) {
+	build := func(t *testing.T, listed []configstoreTables.TableListedModelEntry) *GovernancePlugin {
+		t.Helper()
+		vk := buildVirtualKey("vk-page", "sk-bf-page", "Page Key", true)
+		vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+		}
+		vk.ListedModels = listed
+		logger := NewMockLogger()
+		store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		}, nil, nil)
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin
+	}
+
+	listing := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{
+			ListModelsResponse: &schemas.BifrostListModelsResponse{
+				Data:          []schemas.Model{{ID: "openai/gpt-5.4"}, {ID: "openai/gpt-4o"}},
+				NextPageToken: "provider-cursor",
+				ExtraFields:   schemas.BifrostResponseExtraFields{RequestType: schemas.ListModelsRequest, Provider: schemas.OpenAI},
+			},
+		}
+	}
+	post := func(t *testing.T, plugin *GovernancePlugin, result *schemas.BifrostResponse) *schemas.BifrostResponse {
+		t.Helper()
+		ctx := presentCtx("sk-bf-page")
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		ctx.Grant().SetAccess(access)
+		out, bifrostErr, err := plugin.PostLLMHook(ctx, result, nil)
+		require.NoError(t, err)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, out)
+		plugin.wg.Wait()
+		return out
+	}
+
+	t.Run("a block clears it", func(t *testing.T) {
+		out := post(t, build(t, []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}), listing())
+		assert.Empty(t, out.ListModelsResponse.NextPageToken)
+		assert.Equal(t, []schemas.Model{{ID: "openai/gpt-5.4"}}, out.ListModelsResponse.Data)
+	})
+
+	t.Run("no block keeps the provider's pagination", func(t *testing.T) {
+		out := post(t, build(t, nil), listing())
+		assert.Equal(t, "provider-cursor", out.ListModelsResponse.NextPageToken,
+			"without a block the page is the provider's own, so its cursor still means something")
+	})
+}
