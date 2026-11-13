@@ -5958,15 +5958,13 @@
         "provider": {
           "type": "string",
           "minLength": 1,
-          "not": { "const": "*" },
-          "pattern": "^(?!regex:)",
+          "not": { "anyOf": [{ "const": "*" }, { "pattern": "^regex:" }] },
           "description": "Provider name, as configured"
         },
         "model": {
           "type": "string",
           "minLength": 1,
-          "not": { "const": "*" },
-          "pattern": "^(?!regex:)",
+          "not": { "anyOf": [{ "const": "*" }, { "pattern": "^regex:" }] },
           "description": "Model name on that provider, named exactly; regex: entries are not accepted here"
         },
         "routing_rule": {
