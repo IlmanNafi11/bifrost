@@ -40,6 +40,13 @@ const (
 	TraceAttrTraceState = "tracestate"
 )
 
+// TraceAttrIsModelProbe marks a trace whose request was a model probe. The flag lives on the
+// request context only while the request runs, and observability connectors are handed the finished
+// trace, so core publishes it here. A probe measures a provider without counting as traffic: no log
+// row, no cost, no budget movement, no provider-stat movement. Connectors read it through
+// IsModelProbeTrace.
+const TraceAttrIsModelProbe = "bifrost.is_model_probe"
+
 // GetStringAttr returns a string attribute, or "" when absent or another type.
 func GetStringAttr(attrs map[string]any, key string) string {
 	v, _ := attrs[key].(string)
@@ -62,6 +69,16 @@ func ContentLoggingDisabledForTrace(t *Trace) bool {
 		return false
 	}
 	return GetBoolAttr(t.RootSpan.Attributes, AttrBifrostContentLoggingDisabled)
+}
+
+// IsModelProbeTrace reports whether the request behind this trace was a model probe, which every
+// observability connector must leave out of its provider statistics. Nil-safe, so a connector can
+// call it on any trace.
+func IsModelProbeTrace(t *Trace) bool {
+	if t == nil {
+		return false
+	}
+	return GetBoolAttr(t.Attributes, TraceAttrIsModelProbe)
 }
 
 // GetInt64Attr returns an integer attribute, widening int and float64.

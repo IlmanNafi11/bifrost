@@ -5953,18 +5953,21 @@
     },
     "virtual_key_listed_model": {
       "type": "object",
-      "description": "One entry of a virtual key's listed_models block: a provider model, or a routing rule named by name. Never both, and never a wildcard (leaving the block absent is how a key allows every model).",
+      "description": "One entry of a virtual key's listed_models block: a provider model, or a routing rule named by name. Never both, never a wildcard and never a regex: entry (leaving the block absent is how a key allows every model).",
       "properties": {
         "provider": {
           "type": "string",
           "minLength": 1,
+          "not": { "const": "*" },
+          "pattern": "^(?!regex:)",
           "description": "Provider name, as configured"
         },
         "model": {
           "type": "string",
           "minLength": 1,
           "not": { "const": "*" },
-          "description": "Model name on that provider"
+          "pattern": "^(?!regex:)",
+          "description": "Model name on that provider, named exactly; regex: entries are not accepted here"
         },
         "routing_rule": {
           "type": "string",

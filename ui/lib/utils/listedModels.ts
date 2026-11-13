@@ -208,7 +208,11 @@ export interface ValidateListedModelsInput {
 	allowAllProviders: boolean;
 }
 
-/** The structural part of the server's validation: cap, one form per entry, no wildcard. */
+/**
+ * The structural part of the server's validation: cap, one form per entry, no wildcard and no regex
+ * pattern. The model lists match `regex:` entries as patterns everywhere else, so a pattern here
+ * would be the wildcard this block refuses by design.
+ */
 export function validateListedModelsShape(entries: ListedModelsEntry[]): string | undefined {
 	if (entries.length > MAX_LISTED_MODELS_ENTRIES) {
 		return `listed_models can have at most ${MAX_LISTED_MODELS_ENTRIES} entries, got ${entries.length}`;
@@ -226,6 +230,9 @@ export function validateListedModelsShape(entries: ListedModelsEntry[]): string 
 		}
 		if (provider === MODEL_WILDCARD || model === MODEL_WILDCARD) {
 			return `listed_models entry ${i} cannot be a wildcard: leave the block absent to allow every model`;
+		}
+		if (provider.startsWith(REGEX_ENTRY_PREFIX) || model.startsWith(REGEX_ENTRY_PREFIX)) {
+			return `listed_models entry ${i} cannot be a regex entry: name the model exactly, or leave the block absent to allow every model`;
 		}
 	}
 	return undefined;

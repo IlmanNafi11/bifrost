@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -146,6 +147,33 @@ func TestRoutingRuleStore_ScopeChain(t *testing.T) {
 	assert.False(t, rules.AllowsRequest(bare, "user-only", "openai", "gpt-5.4"))
 }
 
+// A rule name is unique per scope, not per deployment: two teams may each define a rule called the
+// same thing over different models. Resolving by name alone would let one team's rule answer for the
+// other's key, so the name is resolved inside the caller's own scope chain.
+func TestRoutingRuleStore_SameNameInTwoScopes(t *testing.T) {
+	ctx := context.Background()
+	teamA, teamB := "team-a", "team-b"
+
+	store := newRuleCacheTestStore(t,
+		ruleTo("rule-a", "coding", "team", &teamA, true, "openai", "gpt-5.4"),
+		ruleTo("rule-b", "coding", "team", &teamB, true, "anthropic", "claude-sonnet-5"),
+	)
+	rules, err := NewRoutingRuleStore(ctx, store, NewMockLogger())
+	require.NoError(t, err)
+
+	callerA := scopedCtx("vk-a", "", teamA, "")
+	require.True(t, rules.AllowsRequest(callerA, "coding", "openai", "gpt-5.4"))
+	assert.False(t, rules.AllowsRequest(callerA, "coding", "anthropic", "claude-sonnet-5"),
+		"team B's rule of the same name must not answer for team A's key")
+
+	callerB := scopedCtx("vk-b", "", teamB, "")
+	require.True(t, rules.AllowsRequest(callerB, "coding", "anthropic", "claude-sonnet-5"))
+	assert.False(t, rules.AllowsRequest(callerB, "coding", "openai", "gpt-5.4"),
+		"team A's rule of the same name must not answer for team B's key")
+
+	assert.Equal(t, []string{"coding"}, rules.ListedRuleNames(callerA, []string{"coding"}))
+}
+
 // A rule edited or deleted between requests must be read as it now stands: the cache is refreshed
 // from the store on the invalidation the server already runs, and anything it has not seen is a
 // refusal rather than a stale yes.
@@ -220,4 +248,58 @@ func TestRoutingRuleStore_FailClosed(t *testing.T) {
 	assert.False(t, rules.AllowsRequest(emptyCtx(), "coding", "openai", "gpt-4o"))
 	assert.Empty(t, rules.ListedRuleNames(emptyCtx(), []string{"coding"}), "nothing cached lists nothing")
 	require.Error(t, rules.Reload(ctx, "rule-coding"), "a cache with no store cannot refresh, and says so")
+}
+
+// A delete and an edit race on the same rule: the reload reads the table, the delete lands, and the
+// reload then publishes the row it read a moment earlier. That would resurrect a rule the operator
+// just deleted, opening models for a key that listed it.
+func TestRoutingRuleStore_ReloadDoesNotResurrectADeletedRule(t *testing.T) {
+	ctx := context.Background()
+	rule := ruleTo("rule-race", "racing", "global", nil, true, "openai", "gpt-5.4")
+	inner := newRuleCacheTestStore(t, rule)
+
+	// Pause the reload inside its table read, so the delete provably lands before it publishes.
+	reading := make(chan struct{}, 1)
+	release := make(chan struct{})
+	racing := &pausingRoutingRuleStore{ConfigStore: inner, reading: reading, release: release}
+
+	rules, err := NewRoutingRuleStore(ctx, racing, NewMockLogger())
+	require.NoError(t, err)
+	require.True(t, rules.AllowsRequest(emptyCtx(), "racing", "openai", "gpt-5.4"))
+
+	racing.pause.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- rules.Reload(ctx, rule.ID) }()
+
+	<-reading
+	rules.Remove(rule.ID)
+	require.NoError(t, inner.DeleteRoutingRule(ctx, rule.ID))
+	close(release)
+	require.NoError(t, <-done)
+
+	assert.False(t, rules.AllowsRequest(emptyCtx(), "racing", "openai", "gpt-5.4"),
+		"a reload that raced a delete must not publish the deleted rule")
+	rules.mu.RLock()
+	_, cached := rules.byID[rule.ID]
+	rules.mu.RUnlock()
+	assert.False(t, cached, "the deleted rule must not be back in the cache")
+}
+
+// pausingRoutingRuleStore hands the test control of the window between the reload's table read and
+// its publish, which is where a delete has to win. The pause starts off so construction, which also
+// reads the table, runs normally.
+type pausingRoutingRuleStore struct {
+	configstore.ConfigStore
+	pause   atomic.Bool
+	reading chan struct{}
+	release chan struct{}
+}
+
+func (p *pausingRoutingRuleStore) GetRoutingRule(ctx context.Context, id string) (*configstoreTables.TableRoutingRule, error) {
+	rule, err := p.ConfigStore.GetRoutingRule(ctx, id)
+	if p.pause.Load() {
+		p.reading <- struct{}{}
+		<-p.release
+	}
+	return rule, err
 }

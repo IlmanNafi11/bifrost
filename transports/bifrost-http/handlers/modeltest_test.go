@@ -191,6 +191,9 @@ func probeRequest(t *testing.T, payload any) *fasthttp.RequestCtx {
 	ctx.Request.SetRequestURI("/api/models/test")
 	ctx.Request.Header.SetContentType("application/json")
 	ctx.Request.SetBody(body)
+	// The probe endpoint is admin-only; these tests drive it as the local admin the auth
+	// middleware would mark. The gate itself is covered by its own test.
+	ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 	return ctx
 }
 
@@ -276,7 +279,8 @@ func TestModelProbe_TimeoutIsReportedAsAVerdict(t *testing.T) {
 
 	response := decodeProbe(t, ctx)
 	assert.False(t, response.OK)
-	assert.Regexp(t, `^timeout setelah 300`, response.Error, "a deadline is reported as a timeout verdict, not the raw context error")
+	assert.Regexp(t, `^probe timed out after 300`, response.Error, "a deadline is reported as a timeout verdict, not the raw context error")
+	assert.True(t, response.TimedOut, "the verdict names the timeout structurally, not only in prose")
 	assert.Nil(t, response.TTFTMs, "a timeout reports no first-token time")
 }
 
@@ -308,6 +312,7 @@ func TestModelProbe_RejectsIncompletePayloadAndUnknownMode(t *testing.T) {
 	invalid.Request.Header.SetMethod(fasthttp.MethodPost)
 	invalid.Request.SetRequestURI("/api/models/test")
 	invalid.Request.SetBody([]byte("{not json"))
+	invalid.SetUserValue(schemas.IsLocalAdminContextKey, true)
 	h.testModel(invalid)
 	assert.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode())
 }
@@ -546,7 +551,7 @@ func TestListModelDetails_ReportsProbeMode(t *testing.T) {
 		[]string{"gpt-4o-mini", "text-embedding-3-small", "brand-new-model"},
 	)
 	h.inMemoryStore.ModelCatalog = probeCatalog(t, map[string]string{
-		"openai/gpt-4o-mini":           "chat",
+		"openai/gpt-4o-mini":            "chat",
 		"openai/text-embedding-3-small": "embedding",
 	})
 
@@ -565,4 +570,91 @@ func TestListModelDetails_ReportsProbeMode(t *testing.T) {
 	assert.Equal(t, "chat", modes["gpt-4o-mini"])
 	assert.Equal(t, "embedding", modes["text-embedding-3-small"])
 	assert.Equal(t, "chat", modes["brand-new-model"], "a row with no datasheet entry is probed as chat")
+}
+
+// A probe spends the deployment's credentials while counting as no traffic at all, so the endpoint
+// is admin-only. A non-admin caller must be refused before anything is spent.
+func TestModelProbe_NonAdminIsRefusedBeforeSpending(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, observer := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	ctx.RemoveUserValue(schemas.IsLocalAdminContextKey)
+	h.testModel(ctx)
+
+	assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	assert.Empty(t, observer.isProbe, "a refused caller must not reach the provider at all")
+}
+
+// A pinned key that belongs to another provider must be refused, not silently swapped for a key of
+// the named provider: the verdict names the key that served it, and it must be the one asked for.
+func TestModelProbe_PinnedKeyMustBelongToTheNamedProvider(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _ := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
+	h.inMemoryStore.Providers[schemas.Anthropic] = configstore.ProviderConfig{
+		Keys:          []schemas.Key{{ID: "key-anthropic", Name: "claude", Value: *schemas.NewSecretVar("sk-ant"), Weight: 1, Models: schemas.WhiteList{"*"}}},
+		NetworkConfig: &schemas.NetworkConfig{AllowPrivateNetwork: true},
+	}
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini", KeyID: "key-anthropic"})
+	h.testModel(ctx)
+	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "has no key key-anthropic")
+}
+
+// The probe endpoint is the one place a deployment can be made to spend without a trace, so one
+// principal cannot loop it: the second probe inside the interval is refused, and the interval is
+// measured from attempts, not successes.
+func TestModelProbe_AdmissionBoundsOnePrincipal(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, observer := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
+
+	first := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	h.testModel(first)
+	require.Equal(t, fasthttp.StatusOK, first.Response.StatusCode(), string(first.Response.Body()))
+
+	second := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	h.testModel(second)
+	assert.Equal(t, fasthttp.StatusTooManyRequests, second.Response.StatusCode(), string(second.Response.Body()))
+
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	assert.Len(t, observer.isProbe, 1, "the refused probe must not reach the provider")
+}
+
+// A provider that asked to be left alone is not re-probed immediately: the backoff grows while the
+// failures continue and resets on the first probe that reaches the provider.
+func TestModelProbe_AdmissionBacksOffAThrottledProvider(t *testing.T) {
+	var a probeAdmission
+	throttled := &ModelTestResponse{TimedOut: true}
+	a.record(schemas.OpenAI, throttled, nil)
+	now := time.Now()
+	a.mu.Lock()
+	until := a.blockedUntil[schemas.OpenAI]
+	a.mu.Unlock()
+	assert.True(t, until.After(now.Add(probeFailureBackoff-time.Second)), "a failed probe pushes the next attempt out")
+
+	a.record(schemas.OpenAI, &ModelTestResponse{OK: true}, nil)
+	a.mu.Lock()
+	_, stillBlocked := a.blockedUntil[schemas.OpenAI]
+	a.mu.Unlock()
+	assert.False(t, stillBlocked, "a probe that reached the provider resets the backoff")
+}
+
+// A provider error message can quote the credential it rejected. The verdict is shown in the
+// dashboard, so it is passed through the request's redaction data before it leaves.
+func TestRedactProbeError_AppliesTheRequestRedactions(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		LiteralReplacements: schemas.RedactionMapsByPhase{
+			Input: map[string]string{"sk-secret-value": "[REDACTED]"},
+		},
+	})
+
+	got := redactProbeError(ctx, "Incorrect API key provided: sk-secret-value")
+	assert.Equal(t, "Incorrect API key provided: [REDACTED]", got)
+	assert.Equal(t, "unrelated", redactProbeError(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "unrelated"),
+		"a request with no redaction data keeps the provider text as-is")
 }

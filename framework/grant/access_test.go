@@ -1869,3 +1869,23 @@ func TestAccess_ModelListedComposes(t *testing.T) {
 	assert.False(t, intersectAccess.ModelListed("openai", "gpt-5.4"), "the scope did not list it")
 	assert.False(t, intersectAccess.ModelListed("openai", "gpt-4o"), "the base did not list it")
 }
+
+// ModelListed runs on every model-gated request, whether or not any permit carries a listing, so
+// it must not clone the permit set to ask its two questions. This pins the cost at zero allocations
+// for the common shape: permits with no listing block.
+func BenchmarkAccessModelListed(b *testing.B) {
+	base := newPermit(permitSpec{
+		Type: PermitVirtualKey, ID: "vk1", Name: "Caller Key",
+		ProviderPermits: []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}},
+			{Provider: "anthropic", AllowedModels: []string{"*"}},
+		},
+	})
+	access := NewAccess(held(base), nil, "", nil)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if !access.ModelListed("openai", "gpt-4o") {
+			b.Fatal("model should be listed")
+		}
+	}
+}

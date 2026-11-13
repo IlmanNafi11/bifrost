@@ -7474,7 +7474,9 @@ func resolveMCPConfigClientIDs(
 
 // sanitizeVirtualKeyListedModels reduces a config.json listed_models block to the entries the block
 // itself accepts: at most MaxVirtualKeyListedModelsEntries, each naming either a provider/model pair
-// or a routing rule by name, never both and never a wildcard.
+// or a routing rule by name, never both, never a wildcard and never a regex: entry. The entry
+// validator enforces all of that, so a pattern - which would grant every model the listing was
+// meant to narrow - is dropped here exactly like a wildcard.
 //
 // The block needs no name-to-id resolution - the rule name is the entry's identity in the store, in
 // /v1/models and in the call - so this is the whole load-time treatment. A refused entry is dropped

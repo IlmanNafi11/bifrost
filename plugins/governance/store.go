@@ -340,7 +340,10 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 		if err := store.loadFromConfigMemory(ctx, governanceConfig); err != nil {
 			return nil, fmt.Errorf("failed to load governance data from config memory: %w", err)
 		}
-		// The file-backed deployment's rules are in the config, not behind a config store.
+		// The file-backed deployment's rules are in the config, not behind a config store. The
+		// routing endpoints require a config store (handlers.NewRoutingHandler refuses nil), so no
+		// HTTP edit can change a rule here: the seed is the deployment's rules for its lifetime,
+		// and a config change is picked up when the plugin is rebuilt, not by Reload/Remove.
 		store.routingRules = newRoutingRuleStore(logger)
 		if governanceConfig != nil {
 			store.routingRules.seed(governanceConfig.RoutingRules)
@@ -1576,7 +1579,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		providerPermits = append(providerPermits, pp)
 	}
 	if vk.AllowAllProviders && gs.inMemoryStore != nil {
-		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames())
+		providerPermits = AppendAllProviderPermits(providerPermits, gs.inMemoryStore.GetConfiguredProviderNames(), vk.ListedModels)
 	}
 
 	// A key's own MCP configs and its Virtual MCPs build one accumulator, so a Virtual MCP grants

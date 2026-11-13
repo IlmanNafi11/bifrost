@@ -946,6 +946,10 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 	if trace == nil {
 		return nil
 	}
+	// A model probe is hidden from provider statistics, so it must not land in any metrics
+	// exporter (upstream requests, latency, tokens, cost, key health). The flag travels on the
+	// finished trace because the context is gone by the time the connector sees it.
+	recordMetrics := !schemas.IsModelProbeTrace(trace)
 	// Emit the trace to every configured profile's collector, and record metrics against
 	// each profile's exporter. Conversion is per-target because the resource service name
 	// differs per profile; everything else (filter, instance attrs) is shared.
@@ -956,7 +960,7 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			defer wg.Done()
 			// Metrics first: they are SDK-buffered and never touch the network here, so
 			// they still get recorded even when the trace endpoint is broken.
-			if t.metricsExporter != nil {
+			if t.metricsExporter != nil && recordMetrics {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace, t.overheadBreakdownEnabled)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
 				p.recordA2AMetricsFromTrace(ctx, t.metricsExporter, trace)

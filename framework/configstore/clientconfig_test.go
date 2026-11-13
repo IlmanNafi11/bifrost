@@ -43,11 +43,16 @@ func TestGenerateVirtualKeyHashCoversListedModels(t *testing.T) {
 	}
 	base := tables.TableVirtualKey{ID: "vk-lm", Name: "prod", Value: *schemas.NewSecretVar("sk-bf-lm")}
 	plain := hash(base)
-	require.Equal(t, plain, hash(func() tables.TableVirtualKey {
+	// A key from before the column has no block at all and must keep the hash it had, or every
+	// existing key would re-sync from config.json on upgrade. An explicit empty block is not that
+	// key: "[]" denies every model, so hashing it like "absent" would leave a config.json that adds
+	// the block looking unchanged, the sync would skip it, and the key would stay wide open.
+	denyAll := hash(func() tables.TableVirtualKey {
 		vk := base
 		vk.ListedModels = []tables.TableListedModelEntry{}
 		return vk
-	}()), "a key from before the column must hash like one with no block")
+	}())
+	require.NotEqual(t, plain, denyAll, "an explicit deny-all block is a change, not the absent block")
 
 	gpt := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
 	other := tables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.5"}

@@ -84,6 +84,11 @@ type Tracer interface {
 	// connectors export with x-bf-dim-* labels. A name already there is overwritten.
 	MergeTraceDimensions(traceID string, dims map[string]string)
 
+	// SetTraceAttribute sets a trace-level attribute on an in-flight trace. Unlike
+	// Span attributes these are not exported as OTEL/Datadog span attributes; connectors
+	// read them off the completed trace. Nil-safe for an unknown trace ID.
+	SetTraceAttribute(traceID string, key string, value any)
+
 	// SpanFromHandle resolves the *Span for a handle once, so a caller writing many
 	// attributes (e.g. the per-request LLM-call block) can call span.SetAttribute
 	// directly instead of paying a trace+span lookup on every attribute. Returns
@@ -265,6 +270,9 @@ func (n *NoOpTracer) SetSpanStartTime(_ SpanHandle, _ time.Time) {}
 
 // MergeTraceDimensions does nothing.
 func (n *NoOpTracer) MergeTraceDimensions(_ string, _ map[string]string) {}
+
+// SetTraceAttribute does nothing.
+func (n *NoOpTracer) SetTraceAttribute(_ string, _ string, _ any) {}
 
 func (n *NoOpTracer) SpanFromHandle(_ SpanHandle) *Span { return nil }
 

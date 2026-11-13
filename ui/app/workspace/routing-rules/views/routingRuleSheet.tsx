@@ -832,13 +832,8 @@ function TargetRow({ target, index, referencedProviderOptions, allKeys, showRemo
 								ariaLabelledBy={`routing-target-${index}-model-label`}
 							/>
 						</div>
-						{target.provider && target.model && (
-							<ModelTestButton
-								provider={target.provider}
-								model={target.model}
-								keyId={target.key_id}
-								className="h-9 px-2"
-							/>
+						{target.provider && target.model && !target.model.includes("*") && (
+							<ModelTestButton provider={target.provider} model={target.model} keyId={target.key_id} className="h-9 px-2" />
 						)}
 						{target.model && (
 							<Button

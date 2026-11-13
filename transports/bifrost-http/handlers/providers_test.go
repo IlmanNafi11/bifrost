@@ -2907,7 +2907,7 @@ func accessForProviderPermits(permits ...schemas.ProviderPermit) schemas.Access 
 // permit, so the permit carries its whole grant and every consumer reads one list.
 func accessAllowingAllProviders(configured []string, permits ...schemas.ProviderPermit) schemas.Access {
 	permit := grant.NewPermit(grant.PermitVirtualKey, "vk-test", "Test VK", true, false,
-		governanceplugin.AppendAllProviderPermits(permits, configured), nil,
+		governanceplugin.AppendAllProviderPermits(permits, configured, nil), nil,
 		grant.WithAllowAllProviders(true))
 	return grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
 }

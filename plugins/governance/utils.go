@@ -130,9 +130,10 @@ func getWeight(w *float64) float64 {
 //
 // When the access carries a listing (a virtual key's listed_models block, or any source that starts
 // filling one in), the block is the whole answer instead: the caller is shown exactly the models it
-// listed and the names of the routing rules it listed that are still enabled and in scope. A rule's
-// own targets are deliberately not shown - the caller asks for the rule by name, and the models
-// behind it are not its to know.
+// listed and the names of the routing rules it listed that are still enabled and in scope. That set
+// does not depend on which page of the provider catalog this response carries, so a key listing one
+// model sees it on page one whatever the catalog's sort order. A rule's own targets are deliberately
+// not shown - the caller asks for the rule by name, and the models behind it are not its to know.
 //
 // The access is handed in rather than resolved here. A listing is produced after the request has
 // been evaluated, and resolving again at that point would answer for whatever configuration has
@@ -143,6 +144,41 @@ func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, ac
 		return []schemas.Model{}
 	}
 
+	listed := access.ListedModels()
+	if listed != nil {
+		// The listing is authoritative and complete: the caller is shown every model the block names,
+		// whether or not this page of the provider catalog happened to carry it. The provider
+		// paginated before this ran, so walking the current page would drop listed entries that sort
+		// late into a later page - and leave page 1 empty under a live next_page_token, which is what
+		// an OpenAI-compatible client reads as "this key has no models". A model found on the page is
+		// copied from it, so its metadata stays whatever the provider reported.
+		byID := make(map[string]schemas.Model, len(models))
+		for _, model := range models {
+			byID[model.ID] = model
+		}
+		out := make([]schemas.Model, 0, len(listed))
+		for _, entry := range listed {
+			id := entry.ModelID()
+			provider, modelName := schemas.ParseModelString(id, "")
+			if !access.IsModelAllowed(string(provider), modelName) {
+				continue
+			}
+			if model, ok := byID[id]; ok {
+				out = append(out, model)
+				continue
+			}
+			out = append(out, schemas.Model{ID: id})
+		}
+		// A rule's name is not a catalog model, so it is added here rather than looked up. Its targets
+		// stay hidden: the caller asks for the rule, and the models behind it are not its to know.
+		if rules := p.store.RoutingRules(); rules != nil {
+			for _, name := range rules.ListedRuleNames(ctx, access.ListedRules()) {
+				out = append(out, schemas.Model{ID: name})
+			}
+		}
+		return out
+	}
+
 	filtered := make([]schemas.Model, 0, len(models))
 	for _, model := range models {
 		provider, modelName := schemas.ParseModelString(model.ID, "")
@@ -150,34 +186,7 @@ func (p *GovernancePlugin) filterModelsForAccess(ctx *schemas.BifrostContext, ac
 			filtered = append(filtered, model)
 		}
 	}
-
-	listed := access.ListedModels()
-	if listed == nil {
-		return filtered
-	}
-
-	// The listing is authoritative: keep only what it names, in the order the block lists it. A model
-	// the block names but the provider listing does not have is simply absent - the block says what
-	// may be shown, the provider says what exists.
-
-	byID := make(map[string]schemas.Model, len(filtered))
-	for _, model := range filtered {
-		byID[model.ID] = model
-	}
-	out := make([]schemas.Model, 0, len(listed))
-	for _, entry := range listed {
-		if model, ok := byID[entry.ModelID()]; ok {
-			out = append(out, model)
-		}
-	}
-	// A rule's name is not a catalog model, so it is added here rather than looked up. Its targets
-	// stay hidden: the caller asks for the rule, and the models behind it are not its to know.
-	if rules := p.store.RoutingRules(); rules != nil {
-		for _, name := range rules.ListedRuleNames(ctx, access.ListedRules()) {
-			out = append(out, schemas.Model{ID: name})
-		}
-	}
-	return out
+	return filtered
 }
 
 // validateRequiredHeaders checks that all configured required headers are present in the request.
@@ -362,7 +371,14 @@ func PresentedCredentialResolved(ctx *schemas.BifrostContext) bool {
 // the set rather than relaxing them. A materialised entry narrows nothing - every model, every key,
 // nothing blocked - and carries no weight, because a weight is a routing preference a provider
 // config expresses and this one expresses none.
-func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []string) []schemas.ProviderPermit {
+//
+// listed is the key's listed_models block, and it decides what a materialised entry may list. A key
+// with no block materialises unrestricted entries, as before. A key with a block must not: the
+// widening is the same widening, but the block is the whole surface the key was granted, so every
+// provider it does not configure is materialised listing nothing. Deny-all entries for those
+// providers are what keep allow_all_providers from being a way around the block - a key that lists
+// openai/gpt-5.4 may not reach groq through the flag that was meant to widen providers, not models.
+func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []string, listed modelsBlock) []schemas.ProviderPermit {
 	named := make(map[string]struct{}, len(permits))
 	for i := range permits {
 		named[permits[i].Provider] = struct{}{}
@@ -375,13 +391,33 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 			continue
 		}
 		named[provider] = struct{}{}
-		permits = append(permits, schemas.ProviderPermit{
+		pp := schemas.ProviderPermit{
 			Provider:      provider,
 			AllowedModels: schemas.WhiteList{"*"},
 			KeyIDs:        schemas.WhiteList{"*"},
-		})
+		}
+		if listed != nil {
+			pp.ListedModels = listedForProvider(listed, provider)
+		}
+		permits = append(permits, pp)
 	}
 	return permits
+}
+
+// modelsBlock is a key's listed_models block as the permit builder reads it: nil means the feature
+// is off for the key.
+type modelsBlock = []configstoreTables.TableListedModelEntry
+
+// listedForProvider is the block's models for one provider, always non-nil: a provider the block
+// does not name was listed to nothing, not left unrestricted.
+func listedForProvider(entries modelsBlock, provider string) schemas.WhiteList {
+	models := make(schemas.WhiteList, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Provider == provider && entry.Model != "" {
+			models = append(models, entry.Model)
+		}
+	}
+	return models
 }
 
 // listedModelsForProvider returns the models a key's listed_models block names for provider, or nil

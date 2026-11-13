@@ -4644,16 +4644,22 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		// Same pointer rule for listed_models: nil means the caller did not set the block, so the
 		// stored one is kept, while an explicit empty slice clears it (and, unlike metadata, means
 		// "this key may call nothing but its listed rules", so it is stored as '[]', not NULL).
+		//
+		// The clear is written through a copy: a caller that keeps the struct it handed in must not
+		// see a block it explicitly asked to switch off silently nilled, which is also how the
+		// update becomes impossible to repeat from the same value.
+		row := *virtualKey
 		if virtualKey.ClearListedModels {
 			// The block switched back off: NilMap makes GORM's serializer write NULL rather than 'null'.
-			virtualKey.ListedModels = nil
+			row.ListedModels = nil
+			row.ClearListedModels = false
 			columns = append(columns, "listed_models")
 		} else if virtualKey.ListedModels != nil {
 			columns = append(columns, "listed_models")
 		}
 		if err := txDB.WithContext(ctx).
 			Select(columns).
-			Updates(virtualKey).Error; err != nil {
+			Updates(&row).Error; err != nil {
 			return s.parseGormError(err)
 		}
 	}

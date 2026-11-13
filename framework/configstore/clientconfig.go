@@ -1475,10 +1475,13 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 		hash.Write([]byte("metadata:"))
 		hash.Write(data)
 	}
-	// Hash listed_models only when the key has one, so every key that predates the column keeps the
-	// hash config sync already stored for it. Entries are sorted by their identity before encoding,
-	// so the order a config.json author wrote them in cannot move the hash.
-	if len(vk.ListedModels) > 0 {
+	// Hash listed_models whenever the key has the block, present even when empty, so every key that
+	// predates the column keeps the hash config sync already stored for it. Presence rather than
+	// length is what carries the difference: "[]" is a deny-all block, and hashing it like "absent"
+	// would make a config.json that adds the empty block look unchanged, so the sync would skip it
+	// and leave the key's every model callable. Entries are sorted by their identity before
+	// encoding, so the order a config.json author wrote them in cannot move the hash.
+	if vk.ListedModels != nil {
 		entries := make([]tables.TableListedModelEntry, len(vk.ListedModels))
 		copy(entries, vk.ListedModels)
 		sort.Slice(entries, func(i, j int) bool {

@@ -32,6 +32,11 @@ func IsSessionAffinityActive(ctx *BifrostContext) bool {
 	if ctx == nil {
 		return false
 	}
+	// A model probe is not traffic: it must not read a session's binding (it measures the pool as
+	// configured) nor write one (a probe's key choice is the operator's, not the session's).
+	if isProbe, _ := ctx.Value(BifrostContextKeyIsProbe).(bool); isProbe {
+		return false
+	}
 	if enabled, ok := ctx.Value(BifrostContextKeySessionAffinity).(bool); ok && !enabled {
 		return false
 	}

@@ -129,14 +129,20 @@ func (a *Access) IsModelAllowed(provider string, model string) bool {
 // nothing (nil ListedModels) does not narrow, which is what keeps the feature inert for every permit
 // that predates it; an empty list narrows to nothing.
 //
-// The permit set is the same anyBase fold IsModelAllowed uses, so a listing never outlives the
-// permission it is layered on: a model allowed_models refuses is not listed even if the block names
-// it.
+// The permit set is the same fold IsModelAllowed uses, so a listing never outlives the permission it
+// is layered on: a model allowed_models refuses is not listed even if the block names it. The fold
+// reads provider permits in place rather than through ProviderPermits(), which clones: this runs for
+// every model-gated request, whether or not any permit carries a block.
 func (a *Access) ModelListed(provider string, model string) bool {
 	if a == nil {
 		return false
 	}
-	if !a.IsModelAllowed(provider, model) {
+	baseModel := a.anyBase(func(p schemas.Permit) bool { return a.permitAllowsModelInPlace(p, provider, model) })
+	modelAllowed := baseModel
+	if a.scoping != nil {
+		modelAllowed = a.compose(baseModel, a.permitAllowsModelInPlace(a.scoping, provider, model))
+	}
+	if !modelAllowed {
 		return false
 	}
 	if model == "" {
@@ -150,27 +156,70 @@ func (a *Access) ModelListed(provider string, model string) bool {
 	return a.compose(base, permitListsModel(a.scoping, provider, model))
 }
 
-// permitListsModel reports whether the permit lists model on provider. A permit that holds no
-// provider permit for the provider is outside the listing question (the model permission has already
-// settled that it may not be reached), so it does not narrow here either.
+// permitAllowsModelInPlace is permitAllowsModel reading the permit's provider permits in place.
+// ModelListed runs the model question on every model-gated request before it asks about a listing,
+// and asking it through ProviderPermits() clones each permit's slice twice per permit on a path
+// where most permits carry no listing at all. The permit is a read-only snapshot for the attempt,
+// so reading it where it lives is safe.
+func (a *Access) permitAllowsModelInPlace(p schemas.Permit, provider string, model string) bool {
+	if isNilPermit(p) {
+		return false
+	}
+	pps := providerPermitsInPlace(p)
+	if model == "" {
+		return allowsProviderInPlace(p, pps, provider)
+	}
+	if blacklistsModelInPlace(pps, provider, model) {
+		return false
+	}
+	found := false
+	for i := range pps {
+		pp := &pps[i]
+		if pp.Provider != provider {
+			continue
+		}
+		found = true
+		if a.permitsModel(pp, model) {
+			return true
+		}
+	}
+	if !found && p.AllowsAllProviders() {
+		return true
+	}
+	return false
+}
+
+// permitListsModel reports whether the permit lists model on provider. A provider permit that names
+// no listing is outside the listing question, so it does not narrow, and neither does a permit that
+// holds no provider permit for the provider at all: the model permission has already settled that
+// such a model cannot be reached. One that names a wildcard, or an entry the wildcard expands to
+// ("provider/*"), lists the whole provider: a programmatically built block can carry those even
+// though validation refuses them, and reading one as a literal name would deny every model of the
+// provider while ListedModels() still showed the whole catalog.
 func permitListsModel(p schemas.Permit, provider string, model string) bool {
 	if isNilPermit(p) {
 		return false
 	}
-	for _, pp := range p.ProviderPermits() {
+	listed := true
+	eachProviderPermit(p, func(pp *schemas.ProviderPermit) bool {
 		if pp.Provider != provider || pp.ListedModels == nil {
-			continue
+			return true
 		}
-		if !pp.ListedModels.Contains(model) {
-			return false
+		if pp.ListedModels.Contains(model) || pp.ListedModels.Contains(Wildcard) ||
+			pp.ListedModels.Contains(provider+"/"+Wildcard) {
+			return true
 		}
-	}
-	return true
+		listed = false
+		return false
+	})
+	return listed
 }
 
 // listedView is what one side of the fold says about the listing: the entries it names, and whether
 // it restricts the listing at all. A side that does not restrict it - no permit carries a block, or
-// one carries "*" - leaves the listing to whatever else decides.
+// one carries a wildcard - leaves the listing to whatever else decides. Entries is non-nil whenever
+// Restricted is set, so an empty block (deny every model) survives the fold as an empty listing
+// rather than collapsing into the nil that means "this side does not restrict".
 type listedView struct {
 	entries    []schemas.ListedModelEntry
 	restricted bool
@@ -181,25 +230,28 @@ type listedView struct {
 // entries are what the caller's permits name, folded under the composition mode the way every other
 // permission in this type is: a side that restricts nothing contributes nothing under Intersect and
 // everything under Union.
+//
+// A restricted side always answers with a non-nil slice, empty when the block names no model: the
+// two answers differ, and a deny-all block that folded to nil would list the whole catalog.
 func (a *Access) ListedModels() []schemas.ListedModelEntry {
 	if a == nil {
 		return nil
 	}
 	base := foldListedModels(a.bases)
 	if a.scoping == nil {
-		return base.entries
+		return base.list()
 	}
 	scoped := foldListedModels([]schemas.Permit{a.scoping})
 	switch {
 	case !scoped.restricted:
-		return base.entries
+		return base.list()
 	case !base.restricted:
 		if a.mode == Union {
 			return nil
 		}
-		return scoped.entries
+		return scoped.list()
 	case a.mode == Union:
-		return dedupeListedModels(append(base.entries, scoped.entries...))
+		return dedupeListedModels(append(base.list(), scoped.entries...))
 	default:
 		// Intersect, and any unknown mode, fails closed: only what both sides list survives.
 		scopedSet := make(map[string]struct{}, len(scoped.entries))
@@ -214,6 +266,18 @@ func (a *Access) ListedModels() []schemas.ListedModelEntry {
 		}
 		return dedupeListedModels(kept)
 	}
+}
+
+// list is the entries as the caller sees them: always a non-nil slice when the side restricts, so
+// "restricted to nothing" never reads as "not restricted".
+func (v listedView) list() []schemas.ListedModelEntry {
+	if !v.restricted {
+		return nil
+	}
+	if v.entries == nil {
+		return []schemas.ListedModelEntry{}
+	}
+	return v.entries
 }
 
 // ListedRules implements schemas.Access. Nil when nothing deciding for the access names a rule;
@@ -259,7 +323,6 @@ func (a *Access) ListedRules() []string {
 // not narrowed by the keys that happen to carry a block.
 func foldListedModels(permits []schemas.Permit) listedView {
 	view := listedView{}
-	restricting := 0
 	for _, permit := range permits {
 		if isNilPermit(permit) {
 			continue
@@ -268,11 +331,7 @@ func foldListedModels(permits []schemas.Permit) listedView {
 		if !restricts {
 			return listedView{}
 		}
-		restricting++
 		view.entries = append(view.entries, entries...)
-	}
-	if restricting == 0 {
-		return listedView{}
 	}
 	view.restricted = true
 	view.entries = dedupeListedModels(view.entries)
@@ -283,22 +342,28 @@ func foldListedModels(permits []schemas.Permit) listedView {
 // A provider with no provider permit contributes nothing: the provider permission has already
 // settled that its models cannot be reached. A listed model is matched by exact name, as the gate
 // matches it, so a listing never shows a model ModelListed would refuse.
+//
+// A permit that does hold the block answers restricted=true even when it names no model at all:
+// that is the deny-all shape, and the caller's listing is empty rather than unrestricted.
 func permitListedModels(permit schemas.Permit) ([]schemas.ListedModelEntry, bool) {
-	var entries []schemas.ListedModelEntry
+	entries := make([]schemas.ListedModelEntry, 0)
 	restricts := false
-	for _, pp := range permit.ProviderPermits() {
+	eachProviderPermit(permit, func(pp *schemas.ProviderPermit) bool {
 		if pp.ListedModels == nil {
-			continue
+			return true
+		}
+		if pp.ListedModels.Contains(Wildcard) {
+			// A wildcard lists every model of the provider, which is not a list of entries.
+			entries = nil
+			restricts = false
+			return false
 		}
 		restricts = true
 		for _, model := range pp.ListedModels {
-			if model == Wildcard {
-				// A wildcard lists every model of the provider, which is not a list of entries.
-				return nil, false
-			}
 			entries = append(entries, schemas.ListedModelEntry{Provider: pp.Provider, Model: model})
 		}
-	}
+		return true
+	})
 	return entries, restricts
 }
 

@@ -4768,6 +4768,38 @@ func TestMigrationAddVirtualKeyListedModelsColumn(t *testing.T) {
 	assert.ElementsMatch(t, listed.ListedModels, read(listed.ID).ListedModels)
 }
 
+// A key written before the column existed is the case an in-place upgrade actually hits: the
+// migration has to leave its row readable and its block absent, which is what keeps the feature off
+// for every key that never declared one.
+func TestMigrationAddVirtualKeyListedModelsColumnKeepsExistingRows(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+
+	// Written the way an older binary wrote it: the table is built from the model of that era, so
+	// the row is still there when the column migration runs over it.
+	require.NoError(t, db.Exec(`DROP TABLE governance_virtual_keys`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableVirtualKey{}, "listed_models"))
+	require.NoError(t, db.Exec(
+		`INSERT INTO governance_virtual_keys (id, name, value, value_hash, encryption_status, config_hash, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		"vk-lm-existing", "vk-lm-existing", "sk-bf-vk-lm-existing", "hash", "plain_text", "cfg-hash",
+	).Error)
+
+	require.NoError(t, migrationAddVirtualKeyListedModelsColumn(ctx, db, testMigrationLogger))
+
+	var stored tables.TableVirtualKey
+	require.NoError(t, db.First(&stored, "id = ?", "vk-lm-existing").Error, "an existing row must survive the migration")
+	assert.Nil(t, stored.ListedModels, "a row that predates the column keeps the feature off")
+
+	// And the row is still writable, so the upgrade is not read-only for that key.
+	stored.ListedModels = []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	require.NoError(t, db.Save(&stored).Error, "the row is still writable after the upgrade")
+	var reread tables.TableVirtualKey
+	require.NoError(t, db.First(&reread, "id = ?", stored.ID).Error)
+	assert.Len(t, reread.ListedModels, 1)
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose

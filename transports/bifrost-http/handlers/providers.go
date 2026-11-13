@@ -93,6 +93,8 @@ type ProviderHandler struct {
 	inMemoryStore *lib.Config
 	client        *bifrost.Bifrost
 	modelsManager ModelsManager
+	// probeAdmission bounds the admin-only model probe endpoint. The zero value is ready.
+	probeAdmission probeAdmission
 }
 
 // NewProviderHandler creates a new provider handler instance
@@ -1088,7 +1090,6 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		details := ModelDetailsResponse{
 			Name:     model.Name,
 			Provider: string(model.Provider),
-			Mode:     defaultCatalogPricingMode,
 		}
 		if len(model.AccessibleByKeys) > 0 {
 			details.AccessibleByKeys = model.AccessibleByKeys

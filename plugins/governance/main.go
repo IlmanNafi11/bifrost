@@ -1226,6 +1226,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			}
 			bodyEvaluationRequest := *evaluationRequest
 			bodyEvaluationRequest.Model = bodyModel
+			bodyEvaluationRequest.NestedModel = true
 			_, bifrostError := p.Evaluate(ctx, &bodyEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{
@@ -1253,6 +1254,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
+			batchEvaluationRequest.NestedModel = true
 			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{

@@ -51,6 +51,11 @@ type EvaluationRequest struct {
 	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
 	// not on the request and not in its body.
 	ModelUnseen bool `json:"model_unseen,omitempty"`
+	// NestedModel marks a pass that evaluates a model named somewhere other than the request's own
+	// top-level model: an inline batch item, a passthrough body model, or a model a server tool runs.
+	// Those reach the provider under their own name, so the listing gate asks about them directly and
+	// never treats their name as a routing rule the caller could have asked for.
+	NestedModel bool `json:"nested_model,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -134,22 +139,35 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// governance never reads. An access permitting every model of the provider loses nothing by
 	// that. One that restricts models would have the restriction silently skipped, so it is held
 	// to what the provider actually binds: where the batch job runs the model named on the request
-	// (Gemini, Vertex, Bedrock), that model has to be present, and the allowlist below checks it;
+	// (Gemini, Vertex, Bedrock) and that model is callable and listed, the allowlist below checks it;
 	// where the batch API ignores the request's model and runs whatever the rows name (OpenAI,
 	// Azure), no hint can stand in for the rows, so the access has to permit every model of the
 	// provider. A custom provider is held to what its base provider binds. Inline batches are not
 	// opaque: PreLLMHook evaluates each item's model first.
-	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
-		if !batchModelBoundByProvider(provider, r.governanceInMemoryStore) {
+	//
+	// A listed_models block can never be satisfied this way, whatever the provider: the block names
+	// the models a key may reach, and the rows of an uploaded file are exactly the models governance
+	// cannot read. A key held to a listing therefore refuses an opaque batch outright rather than
+	// admitting one whose rows could run anything.
+	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured {
+		if access.ListedModels() != nil {
 			return &EvaluationResult{
 				Decision: DecisionModelBlocked,
-				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' refused: this virtual key's listed_models block names the models it may reach, and the models an uploaded batch runs are not readable from the request", provider), access.DeniedPermitsForModel(string(provider), "")),
 			}
 		}
-		if model == "" {
-			return &EvaluationResult{
-				Decision: DecisionModelBlocked,
-				Reason:   denialReason(fmt.Sprintf("Batch creation on provider '%s' requires a model: this access restricts models, and a file-based batch names none on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+		if !access.AllowsEveryModel(string(provider)) {
+			if !batchModelBoundByProvider(provider, r.governanceInMemoryStore) {
+				return &EvaluationResult{
+					Decision: DecisionModelBlocked,
+					Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+				}
+			}
+			if model == "" {
+				return &EvaluationResult{
+					Decision: DecisionModelBlocked,
+					Reason:   denialReason(fmt.Sprintf("Batch creation on provider '%s' requires a model: this access restricts models, and a file-based batch names none on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
+				}
 			}
 		}
 	}
@@ -171,26 +189,52 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 		}
 	}
 
-	// The listing gate: a key's listed_models block narrows what it may call beyond allowed_models,
-	// and a routing rule the block names is the only way past it for a model the block does not
-	// list. It reads the model the caller asked for, not the one the request ended up on: a rule
-	// rewrite replaces the model, and the name it replaced is what the caller was allowed to ask for.
+	// The listing gate: a key's listed_models block narrows what it may call beyond allowed_models.
+	// It asks about the name the pass answers for. The request's own pass answers for the name the
+	// caller sent, which is the name a rewrite replaced; a nested pass - an inline batch item, a
+	// passthrough body model, a model a server tool runs - answers for its own model, because that
+	// is the name that reaches the provider.
 	//
-	// The rule has to be listed before its definition is consulted. The rule cache holds every
-	// enabled, in-scope rule of the deployment, so asking it alone would open the targets of any
-	// rule a caller could name, which is a wider grant than the block makes. A listed rule then has
-	// to still reach the model the request landed on, so a rewrite cannot carry the request past
-	// the rule's own targets and fallbacks.
-	if !skipModelCheck {
+	// A routing rule the block names is the one way past a model the block does not list, and only
+	// for the request's own pass: the caller asks for the rule by name, so a rewrite may carry the
+	// request to one of the rule's own targets. A nested name is never a rule name, and a rule the
+	// key did not list is not consulted at all - the rule cache holds every enabled, in-scope rule
+	// of the deployment, so asking it alone would open the targets of any rule a caller could name.
+	// A listed rule then has to still reach the model the request landed on, so a rewrite cannot
+	// carry the request past the rule's own targets and fallbacks.
+	//
+	// The gate runs only when the access carries a listing. Without one there is nothing to narrow,
+	// and asking anyway would put ModelListed's own model-permission pre-check behind every request,
+	// including the paths that deliberately skip that check.
+	if !skipModelCheck && hasListing(access) {
 		requested := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestedModel)
-		if requested != "" && !access.ModelListed(string(provider), requested) {
+		gated := model
+		if !evaluationRequest.NestedModel && requested != "" {
+			gated = requested
+		}
+		if gated == "" {
+			gated = requested
+		}
+		if gated != "" && !access.ModelListed(string(provider), gated) {
 			rules := r.store.RoutingRules()
-			listed := slices.Contains(access.ListedRules(), requested)
-			if !listed || rules == nil || !rules.AllowsRequest(ctx, requested, string(provider), model) {
+			listedRule := !evaluationRequest.NestedModel && requested != "" &&
+				slices.Contains(access.ListedRules(), requested)
+			if !listedRule || rules == nil || !rules.AllowsRequest(ctx, requested, string(provider), model) {
 				return &EvaluationResult{
 					Decision: DecisionModelBlocked,
-					Reason:   denialReason(fmt.Sprintf("Model '%s' is not listed for this virtual key", requested), access.DeniedPermitsForModel(string(provider), requested)),
+					Reason:   denialReason(fmt.Sprintf("Model '%s' is not listed for this virtual key", gated), access.DeniedPermitsForModel(string(provider), gated)),
 				}
+			}
+		}
+		// A listed model the caller asked for has to be what actually runs. A routing rewrite or a
+		// fallback replaces the model after the caller's name was admitted, so the replacement is
+		// checked against the block too: the listing is the key's whole model surface, and an
+		// unlisted model reached that way would spend the key's budget on a model it never granted.
+		if !evaluationRequest.NestedModel && requested != "" && model != "" && model != requested &&
+			access.ModelListed(string(provider), requested) && !access.ModelListed(string(provider), model) {
+			return &EvaluationResult{
+				Decision: DecisionModelBlocked,
+				Reason:   denialReason(fmt.Sprintf("Model '%s' is not listed for this virtual key: '%s' was rewritten or failed over to a model the key's listing does not name", model, requested), access.DeniedPermitsForModel(string(provider), model)),
 			}
 		}
 	}
@@ -205,6 +249,16 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 		Decision: DecisionAllow,
 		Reason:   "Request allowed by the permits it carries",
 	}
+}
+
+// hasListing reports whether the access carries a listed_models block at all: a model listing (empty
+// when the block denies every model) or rule names. Nil on both means the feature is off for this
+// access, and the gate has nothing to enforce.
+func hasListing(access schemas.Access) bool {
+	if access == nil {
+		return false
+	}
+	return access.ListedModels() != nil || access.ListedRules() != nil
 }
 
 // evaluateLimits decides whether a request can be afforded: one check over every limit that covers

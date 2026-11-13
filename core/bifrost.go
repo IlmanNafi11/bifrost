@@ -5559,6 +5559,12 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	// overwritten around RunPostLLMHooks — plugin modifications to these 4 fields are
 	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	reqProvider, reqModel, _ := req.GetRequestFields()
+	// Stamp the route the caller sent before any hook rewrites it, as the request path does: the
+	// listing gate asks which name the caller was allowed to ask for, and a pipeline that never
+	// stamps one leaves that question unanswerable, so governance would have to let it through.
+	if continuation := agentContinuationRoute(ctx); continuation == nil {
+		stampRequestedRoute(ctx, schemas.Route{Provider: reqProvider, Model: reqModel})
+	}
 
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
@@ -5688,6 +5694,10 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		bifrost.releasePluginPipeline(pipeline)
 	}
 	provider, model, _ := req.GetRequestFields()
+	// The realtime callback carries each turn's model, with no routing rewrite before these hooks, so
+	// the name it names is the one governance must gate on. Stamped here because this pipeline has no
+	// request path to stamp it: without one the listing gate has no requested name to ask about.
+	stampRequestedRoute(ctx, schemas.Route{Provider: provider, Model: model})
 
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
@@ -6809,6 +6819,15 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
 			// No traceparent on this path, so the exported W3C trace ID equals the store handle.
 			ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
+		}
+	}
+
+	// A model probe is hidden from provider stats, so every observability connector needs to see
+	// that on the completed trace: the flag lives on the context only while the request runs, and
+	// the connector is handed the trace after it. Set here, where the trace exists for every caller.
+	if IsModelProbe(ctx) {
+		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+			tracer.SetTraceAttribute(traceID, schemas.TraceAttrIsModelProbe, true)
 		}
 	}
 

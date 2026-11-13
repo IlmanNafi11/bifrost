@@ -511,6 +511,13 @@ func TestIsSessionAffinityActive(t *testing.T) {
 	if !schemas.IsSessionAffinityActive(ctx) {
 		t.Fatal("a request that switched affinity on does not take part")
 	}
+	// A probe is not traffic: it must neither read a session's binding (it measures the pool as
+	// configured) nor write one (its key choice is the operator's, not the session's).
+	probeCtx := sessionCtx("s")
+	probeCtx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	if schemas.IsSessionAffinityActive(probeCtx) {
+		t.Fatal("a model probe takes part in session affinity")
+	}
 }
 
 func TestSessionAffinityResolveKeyReadsReplicatedBindings(t *testing.T) {

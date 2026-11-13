@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -46,8 +47,16 @@ type modelRef struct {
 type RoutingRuleStore struct {
 	mu sync.RWMutex
 
-	byID   map[string]*routingRuleDefinition
-	byName map[string]*routingRuleDefinition
+	byID map[string]*routingRuleDefinition
+	// byName indexes definitions by (scope, scope id, name), because a name is only unique within a
+	// scope and a scope holds several rules of different names. A plain name index would let one
+	// team's "coding" rule answer another team's key, with whichever was seeded last winning.
+	byName map[ruleScopeKey]*routingRuleDefinition
+
+	// generation counts removes, so a Reload that read the table before a delete landed can tell
+	// the row it is about to publish is stale. Without it, a reload racing a delete resurrects the
+	// rule: the delete removes the id, then the reload publishes the row it read a moment earlier.
+	generation map[string]uint64
 
 	configStore configstore.ConfigStore
 	logger      schemas.Logger
@@ -73,10 +82,18 @@ func NewRoutingRuleStore(ctx context.Context, configStore configstore.ConfigStor
 
 func newRoutingRuleStore(logger schemas.Logger) *RoutingRuleStore {
 	return &RoutingRuleStore{
-		logger: logger,
-		byID:   map[string]*routingRuleDefinition{},
-		byName: map[string]*routingRuleDefinition{},
+		logger:     logger,
+		byID:       map[string]*routingRuleDefinition{},
+		byName:     map[ruleScopeKey]*routingRuleDefinition{},
+		generation: map[string]uint64{},
 	}
+}
+
+// ruleScopeKey is the (scope, scope id, name) triple a routing rule is unique within.
+type ruleScopeKey struct {
+	scope   string
+	scopeID string
+	name    string
 }
 
 // seed installs the definitions the store was built from.
@@ -92,37 +109,47 @@ func (s *RoutingRuleStore) seed(rules []configstoreTables.TableRoutingRule) {
 // definition's name is cleared so a rename does not leave the old name resolving to the new rule.
 func (s *RoutingRuleStore) storeLocked(rule *configstoreTables.TableRoutingRule) *routingRuleDefinition {
 	if previous := s.byID[rule.ID]; previous != nil {
-		delete(s.byName, previous.name)
+		delete(s.byName, previous.scopeKey())
 	}
 	def := snapshotRoutingRule(rule)
 	s.byID[def.id] = def
-	s.byName[def.name] = def
+	s.byName[def.scopeKey()] = def
 	return def
+}
+
+// scopeKey is the name index key this definition is stored under.
+func (def *routingRuleDefinition) scopeKey() ruleScopeKey {
+	return ruleScopeKey{scope: def.scope, scopeID: def.scopeID, name: def.name}
 }
 
 // Reload refreshes the cached definition of one rule after an edit. The rule is read from the store
 // again, so the refresh reflects exactly what the edit persisted; a rule the store no longer has is
 // dropped, which is how a delete also ends a listed rule's exception.
+//
+// Only that one rule is read: an edit endpoint hands back a single id, and rebuilding the whole
+// listing from one edit would grow with every rule the deployment has.
 func (s *RoutingRuleStore) Reload(ctx context.Context, id string) error {
 	if s.configStore == nil {
 		return fmt.Errorf("routing rule cache has no config store to reload from")
 	}
-	rules, err := s.configStore.GetRoutingRules(ctx)
-	if err != nil {
+	// Read the generation before the row: a delete that lands while the row is being read
+	// increments it, and the row read here is then known to predate the delete.
+	s.mu.RLock()
+	generation := s.generation[id]
+	s.mu.RUnlock()
+	loaded, err := s.configStore.GetRoutingRule(ctx, id)
+	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
 		return fmt.Errorf("reload routing rule %s: %w", id, err)
-	}
-	var loaded *configstoreTables.TableRoutingRule
-	for i := range rules {
-		if rules[i].ID == id {
-			loaded = &rules[i]
-			break
-		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.generation[id] != generation {
+		// A remove landed while the row was being read, so this row is what the delete removed.
+		return nil
+	}
 	if loaded == nil {
 		if previous := s.byID[id]; previous != nil {
-			delete(s.byName, previous.name)
+			delete(s.byName, previous.scopeKey())
 		}
 		delete(s.byID, id)
 		return nil
@@ -137,9 +164,10 @@ func (s *RoutingRuleStore) Remove(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous := s.byID[id]; previous != nil {
-		delete(s.byName, previous.name)
+		delete(s.byName, previous.scopeKey())
 	}
 	delete(s.byID, id)
+	s.generation[id]++
 }
 
 func snapshotRoutingRule(rule *configstoreTables.TableRoutingRule) *routingRuleDefinition {
@@ -191,21 +219,6 @@ func scopeChain(ctx context.Context) []scopeLevel {
 	}
 }
 
-// scopeMatches reports whether the rule's scope is one the request's scope chain reaches. A level
-// the request has no identifier for is skipped, so a request with a key reaches its own rules, its
-// user's, its team's, its customer's, and every global rule - the chain the routing engine matches.
-func scopeMatches(def *routingRuleDefinition, chain []scopeLevel) bool {
-	if def.scope == "global" {
-		return true
-	}
-	for _, level := range chain {
-		if level.scope == def.scope && level.id != "" && level.id == def.scopeID {
-			return true
-		}
-	}
-	return false
-}
-
 // allowsModel reports whether the final provider/model the request sits on is one the rule reaches.
 // A reference that omits provider or model inherits the incoming value, as routing itself does, so
 // only the side it names has to match.
@@ -236,16 +249,37 @@ func (s *RoutingRuleStore) AllowsRequest(ctx context.Context, requestedRuleName 
 	if s == nil || requestedRuleName == "" {
 		return false
 	}
-	s.mu.RLock()
-	def := s.byName[requestedRuleName]
-	s.mu.RUnlock()
-	if def == nil || !def.enabled {
-		return false
-	}
-	if !scopeMatches(def, scopeChain(ctx)) {
+	def := s.lookup(ctx, requestedRuleName)
+	if def == nil {
 		return false
 	}
 	return def.allowsModel(provider, model)
+}
+
+// lookup resolves a rule name against the caller's scope chain and reports it only when it is
+// enabled. A name is unique per scope but one scope holds many names, so the lookup walks the chain
+// from most to least specific and asks for this exact name at each level.
+func (s *RoutingRuleStore) lookup(ctx context.Context, name string) *routingRuleDefinition {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, level := range scopeChain(ctx) {
+		if level.scope != "global" && level.id == "" {
+			continue
+		}
+		if def := s.byName[ruleScopeKey{scope: level.scope, scopeID: level.id, name: name}]; def != nil {
+			return def.enabledOrNil()
+		}
+	}
+	return nil
+}
+
+// enabledOrNil returns the definition when it is enabled, so a disabled rule in the caller's own
+// scope refuses the name instead of letting a less specific rule of the same name answer for it.
+func (def *routingRuleDefinition) enabledOrNil() *routingRuleDefinition {
+	if def == nil || !def.enabled {
+		return nil
+	}
+	return def
 }
 
 // ListedRuleNames returns the rules a key may call, in the order the key listed them, keeping only
@@ -256,16 +290,11 @@ func (s *RoutingRuleStore) ListedRuleNames(ctx context.Context, ruleNames []stri
 	if s == nil || len(ruleNames) == 0 {
 		return nil
 	}
-	chain := scopeChain(ctx)
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	names := make([]string, 0, len(ruleNames))
 	for _, name := range ruleNames {
-		def := s.byName[name]
-		if def == nil || !def.enabled || !scopeMatches(def, chain) {
-			continue
+		if def := s.lookup(ctx, name); def != nil {
+			names = append(names, def.name)
 		}
-		names = append(names, def.name)
 	}
 	return names
 }

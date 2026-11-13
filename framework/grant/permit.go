@@ -271,8 +271,14 @@ func allowsProvider(p schemas.Permit, provider string) bool {
 	if isNilPermit(p) {
 		return false
 	}
-	for _, pp := range p.ProviderPermits() {
-		if pp.Provider == provider {
+	return allowsProviderInPlace(p, providerPermitsInPlace(p), provider)
+}
+
+// allowsProviderInPlace is allowsProvider over permits the caller already holds, so a hot path can
+// answer without a clone. See providerPermitsInPlace for why reading them where they live is safe.
+func allowsProviderInPlace(p schemas.Permit, pps []schemas.ProviderPermit, provider string) bool {
+	for i := range pps {
+		if pps[i].Provider == provider {
 			return true
 		}
 	}
@@ -285,8 +291,13 @@ func blacklistsModel(p schemas.Permit, provider string, model string) bool {
 	if isNilPermit(p) {
 		return false
 	}
-	for _, pp := range p.ProviderPermits() {
-		if pp.Provider == provider && pp.BlacklistedModels.IsBlocked(model) {
+	return blacklistsModelInPlace(providerPermitsInPlace(p), provider, model)
+}
+
+// blacklistsModelInPlace is blacklistsModel over permits the caller already holds.
+func blacklistsModelInPlace(pps []schemas.ProviderPermit, provider string, model string) bool {
+	for i := range pps {
+		if pps[i].Provider == provider && pps[i].BlacklistedModels.IsBlocked(model) {
 			return true
 		}
 	}
@@ -408,13 +419,28 @@ func providerPermitFor(p schemas.Permit, provider string) *schemas.ProviderPermi
 	if isNilPermit(p) {
 		return nil
 	}
-	pps := p.ProviderPermits()
+	pps := providerPermitsInPlace(p)
 	for i := range pps {
 		if pps[i].Provider == provider {
 			return &pps[i]
 		}
 	}
 	return nil
+}
+
+// providerPermitsInPlace returns the permit's provider permits without the defensive clone
+// ProviderPermits performs. Package-internal callers that only read them use this: the permit is
+// immutable after NewPermit, and the access layer runs these folds for every model-gated request, so
+// cloning there would put an allocation on the path of every request that never uses a listing.
+// A permit of another implementation is cloned, since nothing guarantees it is immutable.
+func providerPermitsInPlace(p schemas.Permit) []schemas.ProviderPermit {
+	if p == nil {
+		return nil
+	}
+	if own, ok := p.(*Permit); ok {
+		return own.providerPermits
+	}
+	return p.ProviderPermits()
 }
 
 // eachProviderPermit visits the permit's provider permits. A provider named by nothing but
@@ -424,7 +450,7 @@ func eachProviderPermit(p schemas.Permit, visit func(pp *schemas.ProviderPermit)
 	if isNilPermit(p) {
 		return true
 	}
-	pps := p.ProviderPermits()
+	pps := providerPermitsInPlace(p)
 	for i := range pps {
 		pp := &pps[i]
 		if strings.TrimSpace(pp.Provider) == "" {

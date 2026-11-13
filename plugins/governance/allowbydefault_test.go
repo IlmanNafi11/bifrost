@@ -220,7 +220,7 @@ func TestAppendAllProviderPermits(t *testing.T) {
 	t.Run("materialises the providers no config names", func(t *testing.T) {
 		permits := AppendAllProviderPermits([]schemas.ProviderPermit{
 			{Provider: "openai", AllowedModels: schemas.WhiteList{"gpt-4o"}, KeyIDs: schemas.WhiteList{"key-1"}},
-		}, configured)
+		}, configured, nil)
 
 		byProvider := map[string]schemas.ProviderPermit{}
 		for _, permit := range permits {
@@ -256,9 +256,42 @@ func TestAppendAllProviderPermits(t *testing.T) {
 	})
 
 	t.Run("a deployment with no providers adds nothing", func(t *testing.T) {
-		permits := AppendAllProviderPermits(nil, nil)
+		permits := AppendAllProviderPermits(nil, nil, nil)
 		if len(permits) != 0 {
 			t.Fatalf("expected no permits, got %v", permits)
+		}
+	})
+
+	t.Run("a key with a listing materialises every other provider listing nothing", func(t *testing.T) {
+		// allow_all_providers widens providers, never models: without this the flag would hand a
+		// listed key the whole catalog of every provider it never configured.
+		permits := AppendAllProviderPermits(nil, configured, modelsBlock{{Provider: "openai", Model: "gpt-5.4"}})
+
+		byProvider := map[string]schemas.ProviderPermit{}
+		for _, permit := range permits {
+			byProvider[permit.Provider] = permit
+		}
+		openai, ok := byProvider["openai"]
+		if !ok {
+			t.Fatal("openai was not materialised")
+		}
+		if got := openai.ListedModels; len(got) != 1 || got[0] != "gpt-5.4" {
+			t.Errorf("openai should list the block's model, got %v", got)
+		}
+		for _, provider := range []string{"anthropic", "bedrock"} {
+			got, exists := byProvider[provider]
+			if !exists {
+				t.Fatalf("%s was not materialised", provider)
+			}
+			if got.ListedModels == nil {
+				t.Errorf("%s has no listing: allow_all_providers would reach every model of it", provider)
+			}
+			if len(got.ListedModels) != 0 {
+				t.Errorf("%s should list nothing, got %v", provider, got.ListedModels)
+			}
+			if !got.AllowedModels.IsUnrestricted() {
+				t.Errorf("%s model permission should stay unrestricted, got %v", provider, got.AllowedModels)
+			}
 		}
 	})
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 const (
@@ -100,6 +102,12 @@ func ValidateVirtualKeyListedModels(entries []TableListedModelEntry) error {
 		}
 		if entry.Provider == "*" || entry.Model == "*" {
 			return fmt.Errorf("listed_models entry %d cannot be a wildcard: leave the block absent to allow every model", i)
+		}
+		// The model lists match "regex:" entries as RE2 patterns, so a pattern here would be a
+		// wildcard the rest of this block's validation was written to refuse - and the listing would
+		// show the literal pattern string instead of the models it matches. A listed model is named.
+		if schemas.IsRegexEntry(entry.Provider) || schemas.IsRegexEntry(entry.Model) {
+			return fmt.Errorf("listed_models entry %d cannot be a regex entry: name the model exactly, or leave the block absent to allow every model", i)
 		}
 	}
 	return nil

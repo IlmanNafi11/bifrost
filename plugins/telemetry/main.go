@@ -1060,6 +1060,12 @@ func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string,
 // PreLLMHook records the start time of the request in the context.
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	// A model probe is explicitly not provider traffic: it is hidden from logs, cost, budgets and
+	// provider stats, so it must not move a single series here. Skipping the pre-hook also means
+	// PostLLMHook finds no start time and releases nothing, so no active-request slot is invented.
+	if bifrost.IsModelProbe(ctx) {
+		return req, nil, nil
+	}
 	ctx.SetValue(startTimeKey, time.Now())
 	p.acquireActiveRequest(ctx, req.RequestType)
 	return req, nil, nil
@@ -1271,6 +1277,11 @@ func canonicalEntitySet(ctx context.Context, idsKey, namesKey, scalarIDKey, scal
 }
 
 func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	// Paired with the PreLLMHook guard: a probe moved no counter in, so it must move none out -
+	// upstream requests, retries, latency, cost, tokens and provider key health all stay untouched.
+	if bifrost.IsModelProbe(ctx) {
+		return result, bifrostErr, nil
+	}
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 	// Effective model + alias (mirrors logging's applyModelAlias). model is normalized
