@@ -80,6 +80,28 @@ describe("formatModelProbeToast", () => {
 		expect(toast.description).toContain("key-abc");
 	});
 
+	it("never shows a TTFT for a unary verdict that happens to carry one", () => {
+		// The mode decides the label: an embedding probe is unary whatever numbers come back, so a
+		// first-chunk time reported beside it must not be presented as a token measurement.
+		const toast = formatModelProbeToast({
+			ok: true,
+			mode: "embedding",
+			provider: "openai",
+			model: "text-embedding-3-small",
+			ttft_ms: 5,
+			total_ms: 88,
+		});
+		expect(toast.description).toContain("Latency 88 ms");
+		expect(toast.description).not.toContain("TTFT");
+	});
+
+	it("uses the generic failure reason when the provider sent no message", () => {
+		const toast = formatModelProbeToast({ ok: false, mode: "chat", provider: "openai", model: "m", total_ms: 12, error: "" });
+		expect(toast.variant).toBe("error");
+		expect(toast.description).not.toContain("undefined");
+		expect(toast.description.length).toBeGreaterThan(0);
+	});
+
 	it("shows the provider's error and the key for a failed probe", () => {
 		const toast = formatModelProbeToast({
 			ok: false,

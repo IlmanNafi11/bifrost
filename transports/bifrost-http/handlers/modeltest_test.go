@@ -643,6 +643,31 @@ func TestModelProbe_AdmissionBacksOffAThrottledProvider(t *testing.T) {
 	assert.False(t, stillBlocked, "a probe that reached the provider resets the backoff")
 }
 
+// Each further failure doubles the window, so a provider that keeps refusing is probed less and
+// less often, and the window stops growing at the cap instead of outliving the process.
+func TestModelProbe_AdmissionBackoffDoublesAndCaps(t *testing.T) {
+	var a probeAdmission
+	window := func() time.Duration {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return time.Until(a.blockedUntil[schemas.OpenAI])
+	}
+	throttled := &ModelTestResponse{TimedOut: true}
+	failures := 0
+	previous := time.Duration(0)
+	for range 6 {
+		a.record(schemas.OpenAI, throttled, nil)
+		failures++
+		got := window()
+		if failures > 1 && previous < probeMaxBackoff {
+			assert.Greater(t, got, previous, "failure %d must widen the window", failures)
+		}
+		assert.LessOrEqual(t, got, probeMaxBackoff+time.Second, "failure %d must stay under the cap", failures)
+		previous = got
+	}
+	assert.Less(t, window(), probeMaxBackoff+time.Second, "the cap bounds the window however many failures accumulate")
+}
+
 // A provider error message can quote the credential it rejected. The verdict is shown in the
 // dashboard, so it is passed through the request's redaction data before it leaves.
 func TestRedactProbeError_AppliesTheRequestRedactions(t *testing.T) {

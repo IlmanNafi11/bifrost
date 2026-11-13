@@ -303,3 +303,26 @@ func (p *pausingRoutingRuleStore) GetRoutingRule(ctx context.Context, id string)
 	}
 	return rule, err
 }
+
+// A disabled rule in the caller's own scope must not let a less specific rule of the same name
+// answer for it. The chain is walked most-specific-first and stops at the name it finds, so an
+// operator disabling the team rule hides that name for the team even if a global rule shares it.
+func TestRoutingRuleStore_DisabledScopeRuleShadowsALessSpecificOne(t *testing.T) {
+	ctx := context.Background()
+	teamID := "team-1"
+	globalRule := ruleTo("rule-global", "coding", "global", nil, true, "openai", "gpt-4o")
+	teamRule := ruleTo("rule-team", "coding", "team", &teamID, false, "openai", "gpt-5.4")
+
+	store := newRuleCacheTestStore(t, globalRule, teamRule)
+	rules, err := NewRoutingRuleStore(ctx, store, NewMockLogger())
+	require.NoError(t, err)
+
+	teamCtx := scopedCtx("vk-1", "", teamID, "")
+	assert.False(t, rules.AllowsRequest(teamCtx, "coding", "openai", "gpt-4o"),
+		"the disabled team rule hides the name; the global rule must not answer for it")
+	assert.Empty(t, rules.ListedRuleNames(teamCtx, []string{"coding"}))
+
+	// A caller outside that team still reaches the global rule of the same name.
+	otherCtx := scopedCtx("vk-2", "", "team-2", "")
+	assert.True(t, rules.AllowsRequest(otherCtx, "coding", "openai", "gpt-4o"))
+}

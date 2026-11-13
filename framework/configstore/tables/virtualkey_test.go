@@ -352,6 +352,10 @@ func TestValidateVirtualKeyListedModels(t *testing.T) {
 		{name: "both model and rule", entries: []TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4", RoutingRule: "coding"}}, wantErr: "cannot be both"},
 		{name: "wildcard model", entries: []TableListedModelEntry{model("openai", "*")}, wantErr: `cannot be a wildcard`},
 		{name: "wildcard provider", entries: []TableListedModelEntry{model("*", "gpt-5.4")}, wantErr: `cannot be a wildcard`},
+		// A regex entry would grant every model the pattern matches, which is the whole catalog the
+		// block exists to narrow; the provider lists accept patterns, this one must not.
+		{name: "regex model", entries: []TableListedModelEntry{model("openai", "regex:.*")}, wantErr: "cannot be a regex entry"},
+		{name: "regex provider", entries: []TableListedModelEntry{model("regex:^open", "gpt-5.4")}, wantErr: "cannot be a regex entry"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

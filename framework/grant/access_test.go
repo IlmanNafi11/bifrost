@@ -1868,11 +1868,44 @@ func TestAccess_ModelListedComposes(t *testing.T) {
 	intersectAccess := NewAccess(held(base), scoping, Intersect, nil)
 	assert.False(t, intersectAccess.ModelListed("openai", "gpt-5.4"), "the scope did not list it")
 	assert.False(t, intersectAccess.ModelListed("openai", "gpt-4o"), "the base did not list it")
+
+	// A model both sides list survives the intersection. Without this the two negatives above also
+	// pass for a fold that answers false unconditionally.
+	both := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4"}, nil)),
+		listedPermit("other", "o1", "openai", []string{"gpt-5.4", "gpt-4o"}, nil), Intersect, nil)
+	assert.True(t, both.ModelListed("openai", "gpt-5.4"), "a model both sides list is listed")
+	assert.False(t, both.ModelListed("openai", "gpt-4o"), "the base does not list it")
 }
 
-// ModelListed runs on every model-gated request, whether or not any permit carries a listing, so
-// it must not clone the permit set to ask its two questions. This pins the cost at zero allocations
-// for the common shape: permits with no listing block.
+// With no model name there is nothing to look up in a listing, so the answer is the model-permission
+// question alone and a block cannot deny what it does not name. The gate never asks this way - it
+// falls back to the requested model and skips the question when neither names one - so this pins the
+// contract of the accessor rather than a path a request takes.
+func TestAccess_ModelListedWithoutAModelName(t *testing.T) {
+	unrestricted := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")), nil, "", nil)
+	assert.True(t, unrestricted.ModelListed("openai", ""))
+	assert.False(t, unrestricted.ModelListed("anthropic", ""), "no provider permit, no listing")
+
+	// A provider the permits do not reach is refused before any listing is consulted.
+	noProvider := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{}, nil)), nil, "", nil)
+	assert.False(t, noProvider.ModelListed("anthropic", ""))
+}
+
+// A wildcard block is one a programmatically built permit can carry even though validation refuses
+// to store one. Reading it as a literal model name would deny every model of the provider while
+// ListedModels() still showed the whole catalog, so it lists the provider instead.
+func TestAccess_ModelListedWildcardBlocks(t *testing.T) {
+	for _, listed := range [][]string{{"*"}, {"openai/*"}} {
+		access := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", listed, nil)), nil, "", nil)
+		assert.True(t, access.ModelListed("openai", "gpt-4o"), "%v lists the whole provider", listed)
+		assert.True(t, access.ModelListed("openai", "o3"), "%v lists every model of it", listed)
+	}
+}
+
+// ModelListed runs on every model-gated request, whether or not any permit carries a listing, so it
+// must not clone the permit set to ask its two questions. This measures that cost for the common
+// shape - permits with no listing block - and reports 0 allocs/op; a benchmark cannot fail a build,
+// so the same claim is asserted by TestAccess_ModelListedAllocations below.
 func BenchmarkAccessModelListed(b *testing.B) {
 	base := newPermit(permitSpec{
 		Type: PermitVirtualKey, ID: "vk1", Name: "Caller Key",
@@ -1888,4 +1921,58 @@ func BenchmarkAccessModelListed(b *testing.B) {
 			b.Fatal("model should be listed")
 		}
 	}
+}
+
+// The allocation budget on the request path is a test, not a benchmark, so a regression fails the
+// build. One listing-free permit is the shape almost every request carries.
+func TestAccess_ModelListedAllocations(t *testing.T) {
+	access := NewAccess(held(permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")), nil, "", nil)
+	allocs := testing.AllocsPerRun(100, func() {
+		if !access.ModelListed("openai", "gpt-4o") {
+			t.Fatal("model should be listed")
+		}
+	})
+	assert.Zero(t, allocs, "ModelListed must not allocate on the common path")
+}
+
+// ListedModels is the surface /v1/models is built from: the entries the caller was told exist. The
+// two answers a caller must never confuse are "the block is off" (nil) and "the block names nothing"
+// (non-nil, empty), because a deny-all block folded to nil would list the whole catalog.
+func TestAccess_ListedModels(t *testing.T) {
+	t.Run("no block lists nothing", func(t *testing.T) {
+		assert.Nil(t, NewAccess(held(permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")), nil, "", nil).ListedModels())
+	})
+
+	t.Run("an empty block lists an empty surface, not the whole catalog", func(t *testing.T) {
+		got := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{}, nil)), nil, "", nil).ListedModels()
+		require.NotNil(t, got, "deny-all must not read as unrestricted")
+		assert.Empty(t, got)
+	})
+
+	t.Run("a block lists exactly its entries", func(t *testing.T) {
+		got := NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4", "gpt-4o"}, nil)), nil, "", nil).ListedModels()
+		assert.Equal(t, []schemas.ListedModelEntry{
+			{Provider: "openai", Model: "gpt-5.4"},
+			{Provider: "openai", Model: "gpt-4o"},
+		}, got)
+	})
+
+	t.Run("a wildcard block is unrestricted, not a literal entry", func(t *testing.T) {
+		assert.Nil(t, NewAccess(held(listedPermit(PermitVirtualKey, "vk1", "openai", []string{"*"}, nil)), nil, "", nil).ListedModels())
+	})
+
+	t.Run("intersect keeps only what both sides list", func(t *testing.T) {
+		base := listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4", "gpt-4o"}, nil)
+		scoping := listedPermit("other", "o1", "openai", []string{"gpt-5.4"}, nil)
+		got := NewAccess(held(base), scoping, Intersect, nil).ListedModels()
+		assert.Equal(t, []schemas.ListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, got)
+	})
+
+	t.Run("intersect with nothing in common is empty, not unrestricted", func(t *testing.T) {
+		base := listedPermit(PermitVirtualKey, "vk1", "openai", []string{"gpt-5.4"}, nil)
+		scoping := listedPermit("other", "o1", "openai", []string{"gpt-4o"}, nil)
+		got := NewAccess(held(base), scoping, Intersect, nil).ListedModels()
+		require.NotNil(t, got, "a disjoint intersection denies everything; it does not open the catalog")
+		assert.Empty(t, got)
+	})
 }
