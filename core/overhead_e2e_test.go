@@ -27,8 +27,9 @@ const chatCompletionBody = `{
 // overridden falls through to NoOpTracer, so a request runs normally.
 type recordingTracer struct {
 	*schemas.NoOpTracer
-	mu    sync.Mutex
-	attrs map[string]any
+	mu         sync.Mutex
+	attrs      map[string]any
+	traceAttrs map[string]any
 
 	// Trace-lifecycle counters, used by the abandoned-request tests.
 	deferred  atomic.Int64
@@ -37,7 +38,7 @@ type recordingTracer struct {
 }
 
 func newRecordingTracer() *recordingTracer {
-	return &recordingTracer{NoOpTracer: &schemas.NoOpTracer{}, attrs: map[string]any{}}
+	return &recordingTracer{NoOpTracer: &schemas.NoOpTracer{}, attrs: map[string]any{}, traceAttrs: map[string]any{}}
 }
 
 // NoOpTracer returns an empty trace ID, which the stamp treats as "no trace".
@@ -60,10 +61,25 @@ func (r *recordingTracer) SetAttribute(_ schemas.SpanHandle, key string, value a
 	r.attrs[key] = value
 }
 
+// SetTraceAttribute records what was stamped on the trace rather than a span, which is where the
+// observability connectors read a request-wide flag such as the probe marker.
+func (r *recordingTracer) SetTraceAttribute(_ string, key string, value any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.traceAttrs[key] = value
+}
+
 func (r *recordingTracer) get(key string) (any, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v, ok := r.attrs[key]
+	return v, ok
+}
+
+func (r *recordingTracer) traceAttr(key string) (any, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.traceAttrs[key]
 	return v, ok
 }
 
@@ -530,4 +546,37 @@ func TestOverheadEndToEndStreaming(t *testing.T) {
 
 	t.Logf("chunks=%d total=%v upstream=%v overhead=%v (%.1f%%)",
 		received, total, upstream, overhead, 100*float64(overhead)/float64(total))
+}
+
+// A probe that does not stream - embedding, rerank, video - reaches the unary path, which has no
+// tracing middleware in front of it on the management API. Without a stamp there the trace is
+// recorded as ordinary traffic and the probe shows up in provider metrics it must stay out of.
+func TestModelProbeStampReachesTheUnaryTrace(t *testing.T) {
+	client, _, _ := newBifrostWithMockProvider(t, 0)
+	tracer := newRecordingTracer()
+	client.SetTracer(tracer)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	if _, bifrostErr := client.ChatCompletionRequest(ctx, chatRequest()); bifrostErr != nil {
+		t.Fatalf("probe failed: %v", bifrostErr.Error.Message)
+	}
+
+	if _, ok := tracer.traceAttr(schemas.TraceAttrIsModelProbe); !ok {
+		t.Fatalf("%s was never stamped on the probe's trace", schemas.TraceAttrIsModelProbe)
+	}
+	if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
+		t.Fatal("the probe created no trace id, so nothing downstream can read the stamp")
+	}
+
+	// The same request without the flag must not carry it: the stamp is the probe's alone.
+	ordinary := newRecordingTracer()
+	client.SetTracer(ordinary)
+	plainCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := client.ChatCompletionRequest(plainCtx, chatRequest()); bifrostErr != nil {
+		t.Fatalf("ordinary request failed: %v", bifrostErr.Error.Message)
+	}
+	if _, ok := ordinary.traceAttr(schemas.TraceAttrIsModelProbe); ok {
+		t.Fatal("an ordinary request was stamped as a probe")
+	}
 }
