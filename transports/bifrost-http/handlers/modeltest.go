@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -144,6 +145,7 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusTooManyRequests, "too many probes; wait before probing again")
 		return
 	}
+	defer h.probeAdmission.release()
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
 	defer cancel()
@@ -171,10 +173,23 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	probeCtx, probeCancel := schemas.NewBifrostContextWithTimeout(bifrostCtx, modelProbeTimeout)
+	timeout := h.probeTimeout
+	if timeout <= 0 {
+		timeout = modelProbeTimeout
+	}
+	probeCtx, probeCancel := schemas.NewBifrostContextWithTimeout(bifrostCtx, timeout)
 	defer probeCancel()
-
 	response := h.runModelProbe(probeCtx, payload.Provider, payload.Model, mode)
+	writeProbeAuditLine(probeAuditEvent{
+		Principal: caller,
+		Provider:  string(payload.Provider),
+		Model:     payload.Model,
+		Mode:      mode,
+		OK:        response.OK,
+		TimedOut:  response.TimedOut,
+		TotalMs:   response.TotalMs,
+		KeyName:   response.KeyName,
+	})
 	SendJSON(ctx, response)
 }
 
@@ -207,7 +222,7 @@ func (h *ProviderHandler) runModelProbe(ctx *schemas.BifrostContext, provider sc
 
 	switch {
 	case isProbeTimeout(ctx, probeErr):
-		response.Error = fmt.Sprintf("probe timed out after %s", modelProbeTimeout)
+		response.Error = fmt.Sprintf("probe timed out after %s", h.probeTimeout)
 		response.TimedOut = true
 	case probeErr != nil:
 		// A provider's refusal can quote the credential it rejected; the probe verdict is shown in
@@ -443,7 +458,40 @@ const (
 	probeFailureBackoff = 30 * time.Second
 	// probeMaxBackoff caps the repeated-failure backoff.
 	probeMaxBackoff = 5 * time.Minute
+	// probeMaxInFlight bounds how many probes one process runs at once. Probes share the provider
+	// queues and connection pools with real traffic, so an unbounded burst (a loop, or N replicas
+	// each at their own pace) contends for the same workers the request path needs. A probe refused
+	// here costs nothing: it is rejected before the Bifrost context is even built.
+	probeMaxInFlight = 8
 )
+
+// probeAuditEvent is the one record a probe leaves behind. Every log store, metric, budget and
+// stats surface deliberately skips a probe, which makes a probe unattributable spend — the only
+// such endpoint — so the verdict is written to the standard logger (never the request-log store)
+// under a dedicated `bifrost.probe` marker. The operator can grep the deployment's own log sink
+// for it and reconstruct who probed what and what answered, without the probe polluting the
+// provider statistics it must stay out of.
+type probeAuditEvent struct {
+	Principal string `json:"principal"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Mode      string `json:"mode"`
+	OK        bool   `json:"ok"`
+	TimedOut  bool   `json:"timed_out,omitempty"`
+	TotalMs   int64  `json:"total_ms"`
+	KeyName   string `json:"key_name,omitempty"`
+}
+
+// writeProbeAuditLine emits the audit record. It never fails the request: an audit sink that is
+// slow or broken must not turn a probe into an error.
+func writeProbeAuditLine(event probeAuditEvent) {
+	if logger == nil {
+		return
+	}
+	if line, err := sonic.Marshal(event); err == nil {
+		logger.Info("bifrost.probe %s", string(line))
+	}
+}
 
 // probeAdmission is the in-process guard for the probe endpoint: a per-principal minimum interval
 // plus a per-provider backoff that grows while probes keep failing and resets on the first success.
@@ -454,10 +502,15 @@ type probeAdmission struct {
 	lastStart    map[string]time.Time
 	failures     map[schemas.ModelProvider]int
 	blockedUntil map[schemas.ModelProvider]time.Time
+	// inFlight counts probes currently running. allow refuses once probeMaxInFlight is reached,
+	// and release is paired with every allow that returned true.
+	inFlight int
 }
 
 // allow reports whether the caller may start a probe against provider now, and reserves the slot.
 // A reservation is taken even when the probe later fails: the interval measures attempts, not wins.
+// The per-process concurrency cap is checked here too, so an unbounded burst is refused before it
+// contends with real traffic on the provider queues.
 func (a *probeAdmission) allow(caller string, provider schemas.ModelProvider) bool {
 	now := time.Now()
 	a.mu.Lock()
@@ -471,11 +524,25 @@ func (a *probeAdmission) allow(caller string, provider schemas.ModelProvider) bo
 	if last, ok := a.lastStart[caller]; ok && now.Sub(last) < probeMinInterval {
 		return false
 	}
+	if a.inFlight >= probeMaxInFlight {
+		return false
+	}
 	if a.lastStart == nil {
 		a.lastStart = make(map[string]time.Time, 8)
 	}
 	a.lastStart[caller] = now
+	a.inFlight++
 	return true
+}
+
+// release frees the in-flight slot allow reserved. It is paired with every allow that returned
+// true, via a defer in the handler, so a probe that panics or is cancelled still frees its slot.
+func (a *probeAdmission) release() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.inFlight > 0 {
+		a.inFlight--
+	}
 }
 
 // record applies the verdict to the provider's backoff. A probe that reached the provider and was
@@ -548,19 +615,29 @@ func (h *ProviderHandler) providerKeyLiteral(provider schemas.ModelProvider, key
 	return ""
 }
 
+// probeCredentialPattern matches provider-key-shaped literals a provider may echo back in an error
+// (`sk-...` for OpenAI/Anthropic/OpenRouter, and long base64/hex-looking bearer blobs). It is the
+// last line of defence: the pinned path seeds the request's redaction map with the exact literal,
+// and the unpinned path relies on the pipeline to, but a provider that refuses before key selection
+// completes can still echo the credential into a verdict with no redaction map present. Anything
+// matching this shape is scrubbed rather than returned to the dashboard.
+var probeCredentialPattern = regexp.MustCompile(`sk-[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{40,}`)
+
 // redactProbeError passes a provider error through the request's redaction data, so a message that
 // quotes the credential a provider rejected or any other request content leaves the endpoint the
-// same way it would leave a logged response.
+// same way it would leave a logged response. When no redaction data is present — a provider that
+// refused before key selection populated it — a conservative credential-shape scrub still applies,
+// so a quoted key never reaches the dashboard.
 func redactProbeError(ctx *schemas.BifrostContext, text string) string {
 	data, ok := schemas.RedactionDataFromContext(ctx)
-	if !ok {
+	if ok {
+		if len(data.LiteralReplacements.Input) > 0 {
+			text = schemas.ApplyLiteralReplacements(text, data.LiteralReplacements.Input)
+		}
+		if len(data.ReversibleMappings.Output) > 0 {
+			text = schemas.ApplyLiteralReplacements(text, data.ReversibleMappings.Output)
+		}
 		return text
 	}
-	if len(data.LiteralReplacements.Input) > 0 {
-		text = schemas.ApplyLiteralReplacements(text, data.LiteralReplacements.Input)
-	}
-	if len(data.ReversibleMappings.Output) > 0 {
-		text = schemas.ApplyLiteralReplacements(text, data.ReversibleMappings.Output)
-	}
-	return text
+	return probeCredentialPattern.ReplaceAllString(text, "[REDACTED]")
 }

@@ -388,3 +388,53 @@ func TestRoutingRuleStore_RenameMovesTheListedName(t *testing.T) {
 	assert.True(t, rules.AllowsRequest(requestCtx, "coding-v2", "deepseek", "deepseek-v4-flash"))
 	assert.Equal(t, []string{"coding-v2"}, rules.ListedRuleNames(requestCtx, []string{"coding", "coding-v2"}))
 }
+
+// Scope resolution follows the same chain routing uses (virtual_key, user, team, customer, global,
+// most specific first), so a name that exists at several levels resolves to the rule at the most
+// specific level the caller reaches and never to a less specific namesake.
+func TestRoutingRuleStore_ScopeResolutionEquivalentToRoutingChain(t *testing.T) {
+	ctx := context.Background()
+	vkID, userID, teamID, customerID := "vk-1", "user-1", "team-1", "cust-1"
+
+	store := newRuleCacheTestStore(t,
+		ruleTo("rule-global", "coding", "global", nil, true, "openai", "gpt-global"),
+		ruleTo("rule-customer", "coding", "customer", &customerID, true, "openai", "gpt-customer"),
+		ruleTo("rule-team", "coding", "team", &teamID, true, "openai", "gpt-team"),
+		ruleTo("rule-user", "coding", "user", &userID, true, "openai", "gpt-user"),
+		ruleTo("rule-vk", "coding", "virtual_key", &vkID, true, "openai", "gpt-vk"),
+	)
+	rules, err := NewRoutingRuleStore(ctx, store, NewMockLogger())
+	require.NoError(t, err)
+
+	full := scopedCtx(vkID, userID, teamID, customerID)
+	assert.True(t, rules.AllowsRequest(full, "coding", "openai", "gpt-vk"))
+	for _, other := range []string{"gpt-user", "gpt-team", "gpt-customer", "gpt-global"} {
+		assert.False(t, rules.AllowsRequest(full, "coding", "openai", other), "virtual_key scope must win over %s", other)
+	}
+
+	noVK := scopedCtx("", userID, teamID, customerID)
+	assert.True(t, rules.AllowsRequest(noVK, "coding", "openai", "gpt-user"))
+	assert.False(t, rules.AllowsRequest(noVK, "coding", "openai", "gpt-team"))
+	assert.False(t, rules.AllowsRequest(noVK, "coding", "openai", "gpt-customer"))
+
+	teamOnly := scopedCtx("", "", teamID, customerID)
+	assert.True(t, rules.AllowsRequest(teamOnly, "coding", "openai", "gpt-team"))
+	assert.False(t, rules.AllowsRequest(teamOnly, "coding", "openai", "gpt-customer"))
+
+	customerOnly := scopedCtx("", "", "", customerID)
+	assert.True(t, rules.AllowsRequest(customerOnly, "coding", "openai", "gpt-customer"))
+	assert.False(t, rules.AllowsRequest(customerOnly, "coding", "openai", "gpt-global"))
+
+	globalOnly := emptyCtx()
+	assert.True(t, rules.AllowsRequest(globalOnly, "coding", "openai", "gpt-global"))
+
+	// The raw chain order is the contract routing reads against: most specific first, global last.
+	chain := scopeChain(full)
+	require.Equal(t, []scopeLevel{
+		{scope: "virtual_key", id: vkID},
+		{scope: "user", id: userID},
+		{scope: "team", id: teamID},
+		{scope: "customer", id: customerID},
+		{scope: "global"},
+	}, chain)
+}

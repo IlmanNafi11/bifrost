@@ -5906,6 +5906,51 @@ func TestCreateVirtualKeyListedModelsValidation(t *testing.T) {
 	})
 }
 
+// Two rules of the same name reaching one key from different scopes cannot both be promised by a
+// listing, and a disabled rule must not be accepted. These two branches of validateListedModelsBody
+// are the only 400s the fixture table above does not exercise.
+func TestCreateVirtualKeyListedModelsAmbiguousAndDisabledRule(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	require.NoError(t, store.CreateTeam(context.Background(), &configstoreTables.TableTeam{ID: "team-1", Name: "Team 1"}))
+	seedListedModelsFixtures(t, store)
+	// A second "coding" rule scoped to team-1 makes the name ambiguous for a team-1 key.
+	require.NoError(t, store.CreateRoutingRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID: "rule-coding-team", Name: "coding", Scope: "team", ScopeID: schemas.Ptr("team-1"),
+		Priority: 1, Enabled: schemas.Ptr(true), CelExpression: "true",
+	}))
+	// A disabled rule that is otherwise in scope.
+	require.NoError(t, store.CreateRoutingRule(context.Background(), &configstoreTables.TableRoutingRule{
+		ID: "rule-disabled", Name: "disabled-fast", Scope: "global",
+		Priority: 1, Enabled: schemas.Ptr(false), CelExpression: "true",
+	}))
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "an ambiguous rule name in scope is refused",
+			body: `{"name":"vk-amb","team_id":"team-1","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"routing_rule":"coding"}]}`,
+			want: "which is ambiguous",
+		},
+		{
+			name: "a disabled rule is refused",
+			body: `{"name":"vk-dis","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"routing_rule":"disabled-fast"}]}`,
+			want: "which is disabled",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newTestRequestCtx(tc.body)
+			handler.createVirtualKey(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.want)
+		})
+	}
+}
+
 // An update replaces the block as a whole, and omitting it leaves the stored one alone. Both are
 // distinguished on the wire by the field's presence, so both are pinned here.
 func TestUpdateVirtualKeyListedModels(t *testing.T) {
@@ -6003,4 +6048,39 @@ func TestUpdateVirtualKeyListedModelsNullClears(t *testing.T) {
 	handler.getVirtualKey(vkCtx)
 	require.Equal(t, fasthttp.StatusOK, vkCtx.Response.StatusCode(), string(vkCtx.Response.Body()))
 	assert.NotContains(t, string(vkCtx.Response.Body()), `"listed_models"`, "an absent block must not render as an empty one")
+}
+
+// An update validates the block against the provider configs as the request leaves them: one that
+// narrows allowed_models below an existing listed entry is refused, and the stored block is
+// unchanged - the listing never silently outlives the permission it sits on.
+func TestUpdateVirtualKey_NarrowingAllowedModelsBelowAListedModelIsRefused(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	seedListedModelsFixtures(t, store)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	createCtx := newTestRequestCtx(`{"name":"vk-narrow","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[{"provider":"openai","model":"gpt-5.4"}]}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	vkID := created.VirtualKey.ID
+
+	ctx := newTestRequestCtx(`{"provider_configs":[{"provider":"openai","allowed_models":["gpt-4o"]}],"listed_models":[{"provider":"openai","model":"gpt-5.4"}]}`)
+	ctx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "allowed_models of provider openai does not allow")
+
+	stored, err := store.GetVirtualKey(context.Background(), vkID)
+	require.NoError(t, err)
+	assert.Equal(t, []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, stored.ListedModels,
+		"a refused update must not change the stored block")
+	for _, pc := range stored.ProviderConfigs {
+		assert.Equal(t, []string{"*"}, []string(pc.AllowedModels), "the refused update must not narrow allowed_models either")
+	}
 }

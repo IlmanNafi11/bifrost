@@ -290,6 +290,12 @@ type listedView struct {
 //
 // A restricted side always answers with a non-nil slice, empty when the block names no model: the
 // two answers differ, and a deny-all block that folded to nil would list the whole catalog.
+//
+// Worked example: a caller holds one permit listing {openai/gpt-5.4} and one listing nothing of
+// its own (an unrestricted pre-block permit). Unscoped, the bases union, so the listing is
+// {openai/gpt-5.4}. Add a scoping permit listing {openai/gpt-5.4-mini}: under Union the caller sees
+// both; under Intersect it sees nothing, because no model is on both sides; a model both sides list
+// (say both list gpt-5.4) survives the intersection alone.
 func (a *Access) ListedModels() []schemas.ListedModelEntry {
 	if a == nil {
 		return nil

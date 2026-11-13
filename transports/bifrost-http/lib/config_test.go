@@ -27420,3 +27420,44 @@ func TestListedModelsConfigRoundTrip(t *testing.T) {
 		assert.Equal(t, governance.DecisionAllow, result.Decision, result.Reason)
 	})
 }
+
+// A listed_models model entry for a provider the key does not name in provider_configs is refused on
+// the ordinary path, but allow_all_providers widens reach and the management API materialises a
+// permit for such an entry (AppendAllProviderPermits). The config-file sanitizer must match, or the
+// same declaration is silently dropped on restart/file load.
+func TestListedModelsFromConfigFile_AllowAllProvidersKeepsUnconfiguredModel(t *testing.T) {
+	initTestLogger()
+	log := &fatalRecordingLogger{}
+	SetLogger(log)
+	dir := t.TempDir()
+	raw := `{
+		"client": {"initial_pool_size": 10, "allowed_origins": ["*"]},
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(dir, "config.db")) + `}},
+		"providers": {"openai": {"keys": [{"value": "sk-openai"}]}},
+		"governance": {"virtual_keys": [{
+			"id": "vk-listed-aap",
+			"name": "vk-listed-aap",
+			"value": "sk-bf-listed-aap",
+			"allow_all_providers": true,
+			"provider_configs": [{"provider": "openai", "weight": 1, "allowed_models": ["*"], "key_ids": ["*"]}],
+			"listed_models": [
+				{"provider": "groq", "model": "llama-3"},
+				{"provider": "openai", "model": "gpt-5.4"}
+			]
+		}]}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0o644))
+	config, err := LoadConfig(context.Background(), dir)
+	require.NoError(t, err)
+	require.Empty(t, log.fatals, "the governance sync failed, which stops startup")
+	defer config.Close(context.Background())
+
+	vk, err := config.ConfigStore.GetVirtualKey(context.Background(), "vk-listed-aap")
+	require.NoError(t, err)
+	assert.Equal(t, []tables.TableListedModelEntry{
+		{Provider: "groq", Model: "llama-3"},
+		{Provider: "openai", Model: "gpt-5.4"},
+	}, vk.ListedModels)
+	assert.NotContains(t, strings.Join(log.warnings, "\n"), "not configured on this key",
+		"an allow_all_providers key keeps listed models for unconfigured providers")
+}

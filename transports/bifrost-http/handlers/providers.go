@@ -95,6 +95,9 @@ type ProviderHandler struct {
 	modelsManager ModelsManager
 	// probeAdmission bounds the admin-only model probe endpoint. The zero value is ready.
 	probeAdmission probeAdmission
+	// probeTimeout bounds each probe call. Zero means the package default (modelProbeTimeout),
+	// overridable in tests without mutating package state.
+	probeTimeout time.Duration
 }
 
 // NewProviderHandler creates a new provider handler instance
@@ -104,6 +107,7 @@ func NewProviderHandler(modelsManager ModelsManager, inMemoryStore *lib.Config, 
 		inMemoryStore: inMemoryStore,
 		client:        client,
 		modelsManager: modelsManager,
+		probeTimeout:  modelProbeTimeout,
 	}
 }
 

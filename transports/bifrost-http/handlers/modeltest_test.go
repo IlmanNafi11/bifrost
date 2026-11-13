@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -268,10 +269,7 @@ func TestModelProbe_TimeoutIsReportedAsAVerdict(t *testing.T) {
 	defer upstream.Close()
 	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
 	h, _ := newProbeHandler(t, upstream.URL, catalog)
-
-	previous := modelProbeTimeout
-	modelProbeTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { modelProbeTimeout = previous })
+	h.probeTimeout = 300 * time.Millisecond
 
 	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
 	h.testModel(ctx)
@@ -729,4 +727,59 @@ func TestModelProbe_PinnedKeySecretIsRedactedFromTheVerdict(t *testing.T) {
 
 	body := string(ctx.Response.Body())
 	assert.NotContains(t, body, secret, "the provider's echo of the pinned key must not reach the caller")
+}
+
+// The admission guard also caps how many probes one process runs at once: probes share the
+// provider queues with real traffic, so an unbounded burst is refused before it contends for the
+// same workers and connection pool.
+func TestModelProbe_AdmissionCapsConcurrency(t *testing.T) {
+	var a probeAdmission
+	for i := range probeMaxInFlight {
+		assert.True(t, a.allow(fmt.Sprintf("caller-%d", i), schemas.OpenAI), "the first %d probes fit under the cap", probeMaxInFlight)
+	}
+	assert.False(t, a.allow("overflow", schemas.OpenAI), "the %d-th concurrent probe is refused", probeMaxInFlight+1)
+
+	a.release()
+	assert.True(t, a.allow("next", schemas.OpenAI), "releasing one slot admits the next probe")
+}
+
+// A provider that refuses before key selection can still echo a credential into a verdict with no
+// redaction data present. The shape scrub is the last line of defence so the dashboard never sees it.
+func TestRedactProbeError_ScrubsCredentialShapeWithoutRedactionData(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	got := redactProbeError(ctx, "Incorrect API key provided: sk-1234567890abcdef")
+	assert.Equal(t, "Incorrect API key provided: [REDACTED]", got)
+	assert.Equal(t, "bad key [REDACTED]", redactProbeError(ctx, "bad key "+strings.Repeat("a", 40)))
+	assert.Equal(t, "plain provider refusal", redactProbeError(ctx, "plain provider refusal"),
+		"non-credential text passes through unchanged")
+}
+
+// When the caller omits key_id the pipeline auto-selects a key; a provider error that echoes that
+// key's secret must still be scrubbed from the verdict even though the caller never named the
+// literal, so the pinned-key redaction path could not have seeded it.
+func TestModelProbe_AutoSelectSecretIsScrubbedFromTheVerdict(t *testing.T) {
+	const secret = "sk-autoselect-secret-abcdef123456"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"message":"Incorrect API key provided: %s","type":"invalid_request_error"}}`, secret)
+	}))
+	t.Cleanup(upstream.Close)
+
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _ := newProbeHandler(t, upstream.URL, catalog)
+	h.inMemoryStore.Providers[schemas.OpenAI] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{
+			ID: "key-openai", Name: "prod-2", Value: *schemas.NewSecretVar(secret), Weight: 1, Models: schemas.WhiteList{"*"},
+		}},
+		NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 10},
+	}
+
+	// No key_id: the pipeline auto-selects the only key, whose secret the upstream echoes back.
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	assert.NotContains(t, string(ctx.Response.Body()), secret, "the auto-selected key's echo must not reach the caller")
 }

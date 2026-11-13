@@ -1877,6 +1877,25 @@ func TestAccess_ModelListedComposes(t *testing.T) {
 	assert.False(t, both.ModelListed("openai", "gpt-4o"), "the base does not list it")
 }
 
+// ListedRules folds bases and scoping under the same Union/Intersect composition as ListedModels,
+// but the two halves are folded separately. This pins the rule half: a rule name is the entry's
+// identity, and the same scope-vs-base narrowing/union that applies to models applies to it.
+func TestAccess_ListedRulesComposes(t *testing.T) {
+	base := listedPermit(PermitVirtualKey, "vk1", "openai", nil, []string{"coding", "cheap"})
+	scoping := listedPermit("other", "o1", "openai", nil, []string{"cheap", "global"})
+
+	unionAccess := NewAccess(held(base), scoping, Union, nil)
+	assert.Equal(t, []string{"coding", "cheap", "global"}, unionAccess.ListedRules())
+
+	intersectAccess := NewAccess(held(base), scoping, Intersect, nil)
+	assert.Equal(t, []string{"cheap"}, intersectAccess.ListedRules(), "only the rule both sides list survives")
+
+	// A scope that lists no rules contributes nothing under Intersect: the base's rules survive,
+	// exactly as a scope that restricts nothing leaves the base's model listing intact.
+	unrestrictedScope := NewAccess(held(base), listedPermit("other", "o1", "openai", nil, nil), Intersect, nil)
+	assert.Equal(t, []string{"coding", "cheap"}, unrestrictedScope.ListedRules())
+}
+
 // With no model name there is nothing to look up in a listing, so the answer is the model-permission
 // question alone and a block cannot deny what it does not name. The gate never asks this way - it
 // falls back to the requested model and skips the question when neither names one - so this pins the

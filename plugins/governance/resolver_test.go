@@ -1917,6 +1917,54 @@ func TestBudgetResolver_EvaluateRequest_ListedModelsAppliesToProbes(t *testing.T
 	assertDecision(t, DecisionModelBlocked, evaluateVirtualKey(resolver, ctx, "sk-bf-probe", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false))
 }
 
+// An opaque (file/blob) batch names its models only inside the uploaded input, which governance
+// cannot read. A key held to a listing refuses it outright rather than admitting a batch whose
+// rows could run any model, whatever the provider's batch binding.
+func TestBudgetResolver_EvaluateRequest_ListedModelsRefusesOpaqueBatch(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-batch", "sk-bf-batch", "Batch Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-batch")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+	result := evaluateOpaqueBatch(resolver, ctx, schemas.OpenAI, "gpt-5.4")
+	assertDecision(t, DecisionModelBlocked, result)
+	assert.Contains(t, result.Reason, "not readable from the request")
+}
+
+// The listing gate reads the caller's requested-model stamp, but a pipeline that misses it must not
+// open the block: when the stamp is empty the gate falls back to the concrete model the pass carries
+// and still refuses an unlisted name. Only a request that names no model anywhere is outside the
+// gate's reach, which is the documented contract (a model-less request has nothing to list).
+func TestBudgetResolver_EvaluateRequest_ListedModelsEmptyStampFallsBackToTheModel(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-empty-stamp", "sk-bf-empty-stamp", "Empty Stamp", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	// No requested-model stamp, but the pass names a concrete model: the gate still refuses an
+	// unlisted name rather than treating the empty stamp as "nothing to check".
+	ctx := resolverCtx(store, "sk-bf-empty-stamp")
+	result := evaluateVirtualKey(resolver, ctx, "sk-bf-empty-stamp", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionModelBlocked, result)
+	assert.Contains(t, result.Reason, "not listed for this virtual key")
+}
+
 // BenchmarkPreLLMHookListedModels measures the governance pre-hook on the three shapes a key's
 // listed_models block can take. The common case is a key that predates the block: its access
 // carries no listing, and the gate answers from the model permission it already had. A listed key

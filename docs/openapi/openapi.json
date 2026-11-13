@@ -44178,6 +44178,10 @@
                     "error": {
                       "type": "string",
                       "description": "Provider error or `timeout setelah 60s`, present when ok is false."
+                    },
+                    "timed_out": {
+                      "type": "boolean",
+                      "description": "True when the probe's own 60-second deadline ended it, distinct from a provider refusal."
                     }
                   }
                 }
