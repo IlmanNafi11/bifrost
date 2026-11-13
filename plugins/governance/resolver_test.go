@@ -1667,13 +1667,14 @@ func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
 	logger := NewMockLogger()
 
 	gpt := configstoreTables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4"}
+	gptMini := configstoreTables.TableListedModelEntry{Provider: "openai", Model: "gpt-5.4-mini"}
 	ruleEntry := configstoreTables.TableListedModelEntry{RoutingRule: "coding"}
 	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
 	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"*"}),
 		buildProviderConfig("deepseek", []string{"*"}),
 	}
-	vk.ListedModels = []configstoreTables.TableListedModelEntry{gpt, ruleEntry}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{gpt, gptMini, ruleEntry}
 	gov := &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RoutingRules: []configstoreTables.TableRoutingRule{{
@@ -1725,13 +1726,23 @@ func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
 		assertDecision(t, DecisionModelBlocked, result)
 	})
 
-	t.Run("the requested name governs, not the post-rewrite model", func(t *testing.T) {
-		// A listed model reached through a rule rewrite: the caller asked for something the block
-		// lists, routing moved it, and the gate reads the name the caller sent.
+	t.Run("a rewrite between two listed models still runs", func(t *testing.T) {
+		// Both names are in the block, so a routing or fallback rewrite between them stays inside
+		// the key's surface. Pinned because the tightening that makes an unlisted rewrite a refusal
+		// is one comparison away from refusing every rewrite, which would take routing away from
+		// every key that lists models.
 		ctx := resolverCtx(store, "sk-bf-listed")
 		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
-		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false)
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4-mini", schemas.ChatCompletionRequest, false, false)
 		assertDecision(t, DecisionAllow, result)
+	})
+
+	t.Run("a rewrite cannot launder either direction", func(t *testing.T) {
+		// A listed name rewritten to an unlisted one: the replacement is what reaches the provider.
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
 
 		// The reverse: the caller asked for a name it may not use, and the rewrite must not launder
 		// it into an allowed final model.
@@ -1740,6 +1751,43 @@ func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
 		result = evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false)
 		assertDecision(t, DecisionModelBlocked, result)
 	})
+
+	t.Run("a fallback attempt is gated again, not grandfathered in", func(t *testing.T) {
+		// Fallbacks re-run the whole pipeline, so the gate answers for the fallback's own provider
+		// and model. A key that lists one openai model must not reach an unlisted one by failing
+		// over to it, and the refusal is the same one the primary would have produced.
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-4o", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
+		assert.Contains(t, result.Reason, "not listed for this virtual key")
+	})
+}
+
+// A listing refusal leaves AllowFallbacks unset, so the fallback chain still runs and every attempt
+// is gated again for its own provider and model (pinned above). That is the recorded contract: the
+// chain cannot widen the block - an attempt naming a model the block does not list for that
+// provider is refused exactly as the primary was - and a chain that names a listed model on another
+// provider is still the operator's own configuration, so it is allowed to serve.
+func TestPreLLMHookListedModels_RefusalAllowsTheChainToReEngage(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk-chain", "sk-bf-chain", "Chain VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+		buildProviderConfig("anthropic", []string{"*"}),
+	})
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	plugin := newAccessTestPlugin(t, vk, nil)
+
+	ctx := presentCtx("sk-bf-chain")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o")
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, newChatRequest())
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit)
+	require.NotNil(t, shortCircuit.Error)
+	assert.Nil(t, shortCircuit.Error.AllowFallbacks,
+		"the chain must re-engage so a listed model on another provider can serve; each attempt is gated again")
+	require.NotNil(t, shortCircuit.Error.ExtraFields.ErrorType)
+	assert.Equal(t, schemas.ErrorTypePolicyModelBlocked, shortCircuit.Error.ExtraFields.ErrorType)
 }
 
 // A nested pass - an inline batch item, a passthrough body model, a model a server tool runs -
