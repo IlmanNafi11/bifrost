@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -91,6 +93,14 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can probe a model")
 		return
 	}
+	// IsLocalAdminContextKey is also true for a caller that presented no credential at all, because
+	// an auth-disabled deployment treats every caller as the local admin. A probe spends the
+	// deployment's provider credentials while leaving no log, budget or stats row behind, so it
+	// takes a credential that was actually checked - the same floor native plugin loading uses.
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed {
+		SendError(ctx, fasthttp.StatusForbidden, "Probing a model requires an authenticated administrator")
+		return
+	}
 	var payload modelTestPayload
 	if err := sonic.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request payload")
@@ -148,6 +158,17 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 	bifrostCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
 	if payload.KeyID != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, payload.KeyID)
+		// A provider that rejects the call can quote the credential it read. The request path never
+		// hands core a literal the caller named, so core cannot recall it into the redaction set;
+		// the pin is the caller naming one, and the verdict must not echo it back.
+		if literal := h.providerKeyLiteral(payload.Provider, payload.KeyID); literal != "" {
+			data, _ := schemas.RedactionDataFromContext(bifrostCtx)
+			if data.LiteralReplacements.Input == nil {
+				data.LiteralReplacements.Input = map[string]string{}
+			}
+			data.LiteralReplacements.Input[literal] = "[REDACTED]"
+			schemas.SetRedactionDataOnContext(bifrostCtx, data)
+		}
 	}
 
 	probeCtx, probeCancel := schemas.NewBifrostContextWithTimeout(bifrostCtx, modelProbeTimeout)
@@ -497,12 +518,34 @@ func isProviderThrottle(probeErr *schemas.BifrostError) bool {
 }
 
 // probePrincipal names the caller for admission accounting: the authenticated session when there is
-// one, the peer address otherwise (an auth-disabled deployment has no other identity to count).
+// one, the peer address otherwise (an auth-disabled deployment has no other identity to count). The
+// token is hashed rather than kept, so the admission map holds no credential for the process
+// lifetime.
 func probePrincipal(ctx *fasthttp.RequestCtx) string {
 	if token, ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string); ok && token != "" {
-		return token
+		sum := sha256.Sum256([]byte(token))
+		return "session:" + hex.EncodeToString(sum[:16])
 	}
 	return "ip:" + ctx.RemoteIP().String()
+}
+
+// providerKeyLiteral reads one configured key's secret by id, for the probe to redact out of a
+// provider error. Empty when the key is unknown or its value is not a readable literal (a
+// credential resolved from the environment or a vault has nothing here to replace).
+func (h *ProviderHandler) providerKeyLiteral(provider schemas.ModelProvider, keyID string) string {
+	if h.inMemoryStore == nil || h.inMemoryStore.Providers == nil {
+		return ""
+	}
+	config, ok := h.inMemoryStore.Providers[provider]
+	if !ok {
+		return ""
+	}
+	for i := range config.Keys {
+		if config.Keys[i].ID == keyID {
+			return config.Keys[i].Value.GetValue()
+		}
+	}
+	return ""
 }
 
 // redactProbeError passes a provider error through the request's redaction data, so a message that

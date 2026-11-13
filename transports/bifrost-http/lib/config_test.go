@@ -27185,7 +27185,10 @@ func TestListedModelsFromConfigFile(t *testing.T) {
 		t.Helper()
 		log := &fatalRecordingLogger{}
 		SetLogger(log)
-		entry := `{"id": "vk-listed", "name": "vk-listed", "value": "sk-bf-listed"`
+		// A model entry names a provider the key configures, so the fixture declares one: a key with
+		// no provider access refuses every model at request time, and a block on it would be stored
+		// only to fail every call.
+		entry := `{"id": "vk-listed", "name": "vk-listed", "value": "sk-bf-listed", "provider_configs": [{"provider": "openai", "weight": 1, "allowed_models": ["*"], "key_ids": ["*"]}]`
 		if listed != "" {
 			entry += `, "listed_models": ` + listed
 		}
@@ -27273,6 +27276,17 @@ func TestListedModelsFromConfigFile(t *testing.T) {
 		assert.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, storedListed(t, config))
 		require.NotEmpty(t, log.warnings, "dropping an entry is logged so the operator can fix the file")
 		assert.Contains(t, strings.Join(log.warnings, "\n"), "listed_models")
+	})
+
+	t.Run("a model on a provider the key does not configure is dropped", func(t *testing.T) {
+		// allow_all_providers widens which providers the key reaches, not which models the block
+		// names, so an entry for groq is refused here exactly as the management API refuses it
+		// instead of being stored and failing every call at request time.
+		config, log := load(t, t.TempDir(), `[{"provider": "groq", "model": "llama-3"}, {"provider": "openai", "model": "gpt-5.4"}]`)
+		defer config.Close(context.Background())
+		assert.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, storedListed(t, config))
+		require.NotEmpty(t, log.warnings)
+		assert.Contains(t, strings.Join(log.warnings, "\n"), "not configured on this key")
 	})
 
 	t.Run("a block whose every entry is malformed denies every model", func(t *testing.T) {

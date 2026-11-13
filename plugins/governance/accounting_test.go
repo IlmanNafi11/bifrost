@@ -907,9 +907,11 @@ func TestAccounting_ProbeSpendsNothing(t *testing.T) {
 	assert.Zero(t, data.Budgets["budget1"].CurrentUsage, "a probe must not charge the budget")
 	assert.Zero(t, data.RateLimits["rl-vk"].TokenCurrentUsage, "a probe must not consume tokens")
 	assert.Zero(t, data.RateLimits["rl-vk"].RequestCurrentUsage, "a probe must not count as a request")
-	if ids, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string); ok {
-		assert.Empty(t, ids, "a probe records no co-payers for the log row it does not write")
-	}
+	// The absence of the key is the assertion, not a reason to skip one: the failure this catches is
+	// a co-payer slice being present at all, and in that case the old form checked nothing.
+	ids, ok := ctx.Value(schemas.BifrostContextKeyGovernanceRateLimitIDs).([]string)
+	assert.False(t, ok, "a probe records no co-payers for the log row it does not write")
+	assert.Empty(t, ids)
 }
 
 // BenchmarkPostLLMHookAccounting records the cost of the probe check on the

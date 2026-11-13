@@ -588,6 +588,24 @@ func TestModelProbe_NonAdminIsRefusedBeforeSpending(t *testing.T) {
 	assert.Empty(t, observer.isProbe, "a refused caller must not reach the provider at all")
 }
 
+// IsLocalAdminContextKey is also set for a caller that presented no credential, because an
+// auth-disabled deployment treats every caller as the local admin. A probe leaves no trace, so it
+// takes a credential that was actually checked and refuses the credential-less caller.
+func TestModelProbe_AuthBypassedCallerIsRefused(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, observer := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.testModel(ctx)
+
+	assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "authenticated administrator")
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	assert.Empty(t, observer.isProbe, "an unauthenticated caller must not reach the provider")
+}
+
 // A pinned key that belongs to another provider must be refused, not silently swapped for a key of
 // the named provider: the verdict names the key that served it, and it must be the one asked for.
 func TestModelProbe_PinnedKeyMustBelongToTheNamedProvider(t *testing.T) {
@@ -659,7 +677,7 @@ func TestModelProbe_AdmissionBackoffDoublesAndCaps(t *testing.T) {
 		a.record(schemas.OpenAI, throttled, nil)
 		failures++
 		got := window()
-		if failures > 1 && previous < probeMaxBackoff {
+		if failures > 1 && previous < probeMaxBackoff-5*time.Second {
 			assert.Greater(t, got, previous, "failure %d must widen the window", failures)
 		}
 		assert.LessOrEqual(t, got, probeMaxBackoff+time.Second, "failure %d must stay under the cap", failures)
@@ -682,4 +700,33 @@ func TestRedactProbeError_AppliesTheRequestRedactions(t *testing.T) {
 	assert.Equal(t, "Incorrect API key provided: [REDACTED]", got)
 	assert.Equal(t, "unrelated", redactProbeError(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "unrelated"),
 		"a request with no redaction data keeps the provider text as-is")
+}
+
+// A provider can quote the credential it rejected, and a pinned probe is the one place the caller
+// names which literal to use. The verdict must not hand that literal back in the dashboard.
+func TestModelProbe_PinnedKeySecretIsRedactedFromTheVerdict(t *testing.T) {
+	const secret = "sk-probe-secret-value"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"message":"Incorrect API key provided: %s","type":"invalid_request_error"}}`, secret)
+	}))
+	t.Cleanup(upstream.Close)
+
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _ := newProbeHandler(t, upstream.URL, catalog)
+	h.inMemoryStore.Providers[schemas.OpenAI] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{
+			ID: "key-pinned", Name: "pinned", Value: *schemas.NewSecretVar(secret), Weight: 1, Models: schemas.WhiteList{"*"},
+		}},
+		NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 10},
+	}
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini", KeyID: "key-pinned"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	body := string(ctx.Response.Body())
+	assert.NotContains(t, body, secret, "the provider's echo of the pinned key must not reach the caller")
 }

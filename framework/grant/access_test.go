@@ -1976,3 +1976,56 @@ func TestAccess_ListedModels(t *testing.T) {
 		assert.Empty(t, got)
 	})
 }
+
+// A block that names one provider's wildcard beside another provider's models narrows the second
+// provider and leaves the first alone. Dropping the whole fold on the wildcard would list the entire
+// catalog while ModelListed still denied the second provider's unlisted models.
+func TestAccess_ListedModelsWildcardDoesNotDropOtherProviders(t *testing.T) {
+	base := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, false, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}, ListedModels: []string{"openai/*"}},
+		{Provider: "groq", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}, ListedModels: []string{"llama-3"}},
+	}, nil)
+	access := NewAccess(held(base), nil, "", nil)
+
+	assert.Equal(t, []schemas.ListedModelEntry{{Provider: "groq", Model: "llama-3"}}, access.ListedModels())
+	assert.False(t, access.ModelListed("groq", "mixtral"), "groq is still narrowed")
+	assert.True(t, access.ModelListed("openai", "gpt-4o"), "openai's wildcard lists all of it")
+}
+
+// The block is read through the model matcher, so a block naming a dated revision still lists the
+// alias the caller asks for - the same rule allowed_models follows. Reading the block literally
+// would list /v1/models entries the call then refuses.
+func TestAccess_ListedModelsIsReadThroughTheMatcher(t *testing.T) {
+	matcher := func(_ string, model string, allowed []string) bool {
+		for _, entry := range allowed {
+			if entry == "gpt-4o" && model == "gpt-4o" {
+				return true
+			}
+			if entry == "gpt-4o-2024-08-06" && (model == "gpt-4o" || model == "gpt-4o-2024-08-06") {
+				return true
+			}
+		}
+		return false
+	}
+	permit := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, false, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: []string{"gpt-4o"}, KeyIDs: []string{"*"},
+			ListedModels: []string{"gpt-4o-2024-08-06"}},
+	}, nil)
+	access := NewAccess([]schemas.Permit{permit}, nil, "", matcher)
+
+	assert.True(t, access.ModelListed("openai", "gpt-4o"), "the alias resolves to the listed revision")
+}
+
+// allow_all_providers materialises a permit for every configured provider, but a caller building a
+// permit by hand can leave one out. A block narrows the key, not the providers it happens to
+// configure, so a provider the permit does not name is not listed rather than unrestricted.
+func TestAccess_ListedModelsClosesAllowAllProvidersItDoesNotConfigure(t *testing.T) {
+	base := NewPermit(PermitVirtualKey, "vk1", "Caller Key", true, true, []schemas.ProviderPermit{
+		{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}, ListedModels: []string{"gpt-5.4"}},
+	}, nil)
+	access := NewAccess(held(base), nil, "", nil)
+
+	assert.True(t, access.ModelListed("openai", "gpt-5.4"))
+	assert.False(t, access.ModelListed("openai", "gpt-4o"), "the block narrows the provider it names")
+	assert.False(t, access.ModelListed("groq", "llama-3"), "allow-all does not carry a provider past the block")
+}

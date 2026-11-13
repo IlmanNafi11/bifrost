@@ -760,6 +760,20 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		form.setValue("userId", assignedUserId);
 	}, [assignedUserId, isEditing, form]);
 
+	// The list endpoint leaves `listed_models` out (it is per-key, not a column the table needs), so
+	// the editor's baseline comes from the single-key GET above. Seed it once, and only while the
+	// field is untouched, so a slow response never overwrites an edit in progress. Absent means the
+	// feature is off and the editor stays off; an empty block is a deny-all and must survive as [].
+	const didSyncListedModels = useRef(false);
+	useEffect(() => {
+		if (didSyncListedModels.current || !isEditing || !vkDetail) return;
+		didSyncListedModels.current = true;
+		if (form.formState.dirtyFields.listedModels) return;
+		const stored = listedModelsFromVirtualKey(vkDetail.virtual_key);
+		if (stored === undefined) return;
+		form.setValue("listedModels", stored, { shouldDirty: false });
+	}, [vkDetail, isEditing, form]);
+
 	// The client config can arrive after the form was seeded; follow it while the user hasn't
 	// touched the switch and the key has no override of its own.
 	useEffect(() => {

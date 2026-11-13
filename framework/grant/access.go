@@ -149,11 +149,11 @@ func (a *Access) ModelListed(provider string, model string) bool {
 		// No name to look up in a listing; the provider question is IsProviderAllowed's.
 		return true
 	}
-	base := a.anyBase(func(p schemas.Permit) bool { return permitListsModel(p, provider, model) })
+	base := a.anyBase(func(p schemas.Permit) bool { return a.permitListsModel(p, provider, model) })
 	if a.scoping == nil {
 		return base
 	}
-	return a.compose(base, permitListsModel(a.scoping, provider, model))
+	return a.compose(base, a.permitListsModel(a.scoping, provider, model))
 }
 
 // permitAllowsModelInPlace is permitAllowsModel reading the permit's provider permits in place.
@@ -196,8 +196,16 @@ func (a *Access) permitAllowsModelInPlace(p schemas.Permit, provider string, mod
 // ("provider/*"), lists the whole provider: a programmatically built block can carry those even
 // though validation refuses them, and reading one as a literal name would deny every model of the
 // provider while ListedModels() still showed the whole catalog.
-func permitListsModel(p schemas.Permit, provider string, model string) bool {
+func (a *Access) permitListsModel(p schemas.Permit, provider string, model string) bool {
 	if isNilPermit(p) {
+		return false
+	}
+	// A key that allows every provider has no provider permit of its own for a provider it does not
+	// configure, yet the allow-all path admits every model there. Reading that absence as "does not
+	// narrow" would leave precisely those providers outside a block the operator wrote to narrow the
+	// whole key, so a block present at all denies them: the key has to name a provider to list a
+	// model on it.
+	if p.AllowsAllProviders() && holdsListing(p) && !namesProvider(p, provider) {
 		return false
 	}
 	listed := true
@@ -205,14 +213,63 @@ func permitListsModel(p schemas.Permit, provider string, model string) bool {
 		if pp.Provider != provider || pp.ListedModels == nil {
 			return true
 		}
-		if pp.ListedModels.Contains(model) || pp.ListedModels.Contains(Wildcard) ||
-			pp.ListedModels.Contains(provider+"/"+Wildcard) {
+		if a.listingNamesModel(pp, provider, model) {
 			return true
 		}
 		listed = false
 		return false
 	})
 	return listed
+}
+
+// holdsListing reports whether the permit carries a listed_models block at all, on any provider.
+func holdsListing(p schemas.Permit) bool {
+	holds := false
+	eachProviderPermit(p, func(pp *schemas.ProviderPermit) bool {
+		if pp.ListedModels != nil {
+			holds = true
+			return false
+		}
+		return true
+	})
+	return holds
+}
+
+// namesProvider reports whether the permit carries a provider permit for provider.
+func namesProvider(p schemas.Permit, provider string) bool {
+	found := false
+	eachProviderPermit(p, func(pp *schemas.ProviderPermit) bool {
+		if pp.Provider == provider {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// listingNamesModel reports whether one provider permit's block names model. It reads the block the
+// same way it reads allowed_models - through the model matcher when there is one - so a block entry
+// that names a dated revision like `gpt-4o-2024-08-06` still lists the alias the caller asks for.
+// The two questions have to agree: a model the block names but this refuses is refused a call that
+// /v1/models advertised, and a model the block does not name but the alias resolves to is listed
+// while the call is denied.
+func (a *Access) listingNamesModel(pp *schemas.ProviderPermit, provider string, model string) bool {
+	if pp.ListedModels.Contains(Wildcard) || pp.ListedModels.Contains(provider+"/"+Wildcard) {
+		return true
+	}
+	name := model
+	if alias, _, ok := strings.Cut(model, "/"); ok && alias == provider {
+		// A listing expanded to "provider/model" ids is matched by its model part.
+		name = strings.TrimPrefix(model, provider+"/")
+	}
+	if pp.ListedModels.Contains(name) {
+		return true
+	}
+	if a.matcher == nil {
+		return false
+	}
+	return a.matcher(provider, name, pp.ListedModels)
 }
 
 // listedView is what one side of the fold says about the listing: the entries it names, and whether
@@ -352,11 +409,12 @@ func permitListedModels(permit schemas.Permit) ([]schemas.ListedModelEntry, bool
 		if pp.ListedModels == nil {
 			return true
 		}
-		if pp.ListedModels.Contains(Wildcard) {
-			// A wildcard lists every model of the provider, which is not a list of entries.
-			entries = nil
-			restricts = false
-			return false
+		if pp.ListedModels.Contains(Wildcard) || pp.ListedModels.Contains(pp.Provider+"/"+Wildcard) {
+			// A wildcard lists every model of that provider, which is not a list of entries. It
+			// leaves this provider outside the listing question and the fold continues, so a block
+			// naming `openai/*` beside a groq model still narrows groq - the answer ModelListed
+			// gives. Dropping the whole fold here would list the catalog while denying groq.
+			return true
 		}
 		restricts = true
 		for _, model := range pp.ListedModels {

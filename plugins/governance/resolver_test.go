@@ -1030,24 +1030,29 @@ func TestPreLLMHookListedModelsEveryRoute(t *testing.T) {
 	})
 	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
 
+	// requested is the name core stamped before any plugin ran. A route that names its model on the
+	// request object carries the loader model there; one that carries it in a nested body or item
+	// has a listed top-level name, so a pass that only checked the stamp would admit it.
+	const listed = "gpt-5.4"
 	routes := []struct {
-		name string
-		req  *schemas.BifrostRequest
+		name      string
+		req       *schemas.BifrostRequest
+		requested string
 	}{
 		{"chat", &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI, Model: loader, Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("hi")}}},
-		}}},
+		}}, loader},
 		{"responses", &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{
 			Provider: schemas.OpenAI, Model: loader, Params: &schemas.ResponsesParameters{},
-		}}},
+		}}, loader},
 		{"passthrough body", &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
 			Provider: schemas.OpenAI, Model: "", Method: "POST", Path: "/v1/chat/completions",
 			Body: []byte(`{"model":"` + loader + `","messages":[{"role":"user","content":"hi"}]}`),
-		}}},
+		}}, listed},
 		{"inline batch item", &schemas.BifrostRequest{RequestType: schemas.BatchCreateRequest, BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
 			Provider: schemas.OpenAI,
 			Requests: []schemas.BatchRequestItem{{CustomID: "a", Params: map[string]any{"model": loader, "messages": []any{}}}},
-		}}},
+		}}, listed},
 	}
 	for _, route := range routes {
 		t.Run(route.name+": a model outside the key's listing is refused", func(t *testing.T) {
@@ -1055,7 +1060,7 @@ func TestPreLLMHookListedModelsEveryRoute(t *testing.T) {
 			// Core stamps the name the caller asked for before any plugin runs; these requests are
 			// built without that pass, so the stamp is made here.
 			ctx := presentCtx("sk-bf-route")
-			ctx.SetValue(schemas.BifrostContextKeyRequestedModel, loader)
+			ctx.SetValue(schemas.BifrostContextKeyRequestedModel, route.requested)
 			_, shortCircuit, err := plugin.PreLLMHook(ctx, route.req)
 			require.NoError(t, err)
 			assertShortCircuitDecision(t, DecisionModelBlocked, shortCircuit)
@@ -1735,6 +1740,34 @@ func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
 		result = evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.OpenAI, "gpt-5.4", schemas.ChatCompletionRequest, false, false)
 		assertDecision(t, DecisionModelBlocked, result)
 	})
+}
+
+// A nested pass - an inline batch item, a passthrough body model, a model a server tool runs -
+// answers for its own model, not the one the caller sent on the request. Reading the stamped
+// request name there would let one listed model launder an unlisted one, since the request's own
+// pass is the only one that may open a routing rule.
+func TestBudgetResolver_EvaluateRequest_ListedModelsGatesTheNestedModel(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+	gov := &configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{*vk}}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, gov, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-listed")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+	result := evaluateGrantedRequestWith(resolver, ctx, ctx.Grant().Access(), &EvaluationRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		Provider:    schemas.OpenAI,
+		Model:       "gpt-4o-mini",
+		NestedModel: true,
+	})
+	assertDecision(t, DecisionModelBlocked, result)
+	assert.Contains(t, result.Reason, "not listed for this virtual key")
 }
 
 // An empty listed_models block denies every model: this is the deny-by-default shape, and only a

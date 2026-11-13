@@ -1121,6 +1121,18 @@ curl -X PUT http://localhost:8080/api/config \
 </Tab>
 </Tabs>
 
+#### Narrowing a key to specific models
+
+`listed_models` on a virtual key decides exactly what that key sees in `GET /v1/models` and, one step further, which model names it may call. It sits on top of `provider_configs[].allowed_models` rather than replacing it: an entry has to pass both, so a key with `allowed_models: ["*"]` can still be held to two models.
+
+Each entry is either a `provider` + `model` pair or a `routing_rule` by name. A rule entry also opens the models behind that rule, which is how one key can be handed a named route without being given the route's targets.
+
+- **Omitting the block leaves the key as it was** - every model its provider configurations allow is listed and callable.
+- **An explicitly empty block denies every model.** The two states are kept apart on purpose: an operator who emptied the list meant to deny, not to revert.
+- **The block is narrower, never wider.** It cannot add a model `allowed_models` refuses, and a listed rule still has to be enabled and in scope for the key.
+
+The full field reference, including how a block that breaks a rule is reduced on load, is in [Virtual keys in config.json](../../deployment-guides/config-json/governance.mdx#listed-models).
+
 ### Error Responses
 
 `type` is a **top-level** field, beside `status_code`, and `error` carries only the

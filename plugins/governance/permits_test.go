@@ -1830,3 +1830,53 @@ func TestFilterModelsForAccess_ListedModels(t *testing.T) {
 	// by asking for the rule, not by listing them.
 	assert.NotContains(t, ids, "deepseek/deepseek-v4-flash")
 }
+
+// Two block shapes that both mean "narrower than the catalog", and both have to keep their meaning
+// on the listing the caller reads: an empty block shows nothing rather than falling back to the
+// catalog, and a block of rules alone shows the rules and no models.
+func TestFilterModelsForAccess_ListedModelsDenyAllAndRuleOnly(t *testing.T) {
+	build := func(t *testing.T, listed []configstoreTables.TableListedModelEntry) *GovernancePlugin {
+		t.Helper()
+		vk := buildVirtualKey("vk-shape", "sk-bf-shape", "Shape Key", true)
+		vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+			{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+			{Provider: "deepseek", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+		}
+		vk.ListedModels = listed
+		logger := NewMockLogger()
+		store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			RoutingRules: []configstoreTables.TableRoutingRule{{
+				ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+				CelExpression: "true",
+				Targets:       []configstoreTables.TableRoutingTarget{{Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1}},
+			}},
+		}, nil, nil)
+		require.NoError(t, err)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+		return plugin
+	}
+	models := []schemas.Model{{ID: "openai/gpt-5.4"}, {ID: "deepseek/deepseek-v4-flash"}}
+	list := func(t *testing.T, plugin *GovernancePlugin) []string {
+		t.Helper()
+		ctx := presentCtx("sk-bf-shape")
+		access, err := plugin.ResolveAccess(ctx)
+		require.NoError(t, err)
+		ids := []string{}
+		for _, model := range plugin.filterModelsForAccess(ctx, access, models) {
+			ids = append(ids, model.ID)
+		}
+		return ids
+	}
+
+	t.Run("an empty block lists nothing", func(t *testing.T) {
+		assert.Empty(t, list(t, build(t, []configstoreTables.TableListedModelEntry{})),
+			"deny-all must not fall back to the catalog")
+	})
+
+	t.Run("a block of rules alone lists the rules and no models", func(t *testing.T) {
+		assert.Equal(t, []string{"coding"}, list(t, build(t, []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}})))
+	})
+}

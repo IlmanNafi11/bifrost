@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -325,4 +326,65 @@ func TestRoutingRuleStore_DisabledScopeRuleShadowsALessSpecificOne(t *testing.T)
 	// A caller outside that team still reaches the global rule of the same name.
 	otherCtx := scopedCtx("vk-2", "", "team-2", "")
 	assert.True(t, rules.AllowsRequest(otherCtx, "coding", "openai", "gpt-4o"))
+}
+
+// An edit replaces a rule in place while requests are reading the cache. The readers must see either
+// the old definition or the new one, never a half-written map, and the whole run must stay under the
+// race detector.
+func TestRoutingRuleStore_ReloadRacesWithReaders(t *testing.T) {
+	ctx := context.Background()
+	rule := ruleTo("rule-live", "live", "global", nil, true, "openai", "gpt-5.4")
+	store := newRuleCacheTestStore(t, rule)
+	rules, err := NewRoutingRuleStore(ctx, store, NewMockLogger())
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			requestCtx := emptyCtx()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				rules.AllowsRequest(requestCtx, "live", "openai", "gpt-5.4")
+				rules.ListedRuleNames(requestCtx, []string{"live"})
+			}
+		}()
+	}
+
+	for i := 0; i < 50; i++ {
+		updated := ruleTo("rule-live", "live", "global", nil, i%2 == 0, "openai", "gpt-5.4")
+		require.NoError(t, store.UpdateRoutingRule(ctx, updated))
+		require.NoError(t, rules.Reload(ctx, updated.ID))
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// A rule's name is its identity in a key's listed_models block, so a rename has to move the cache
+// with it: the old name must stop opening the rule's targets and disappear from the listing, and the
+// new name must take over both.
+func TestRoutingRuleStore_RenameMovesTheListedName(t *testing.T) {
+	ctx := context.Background()
+	rule := ruleTo("rule-rename", "coding", "global", nil, true, "deepseek", "deepseek-v4-flash")
+	store := newRuleCacheTestStore(t, rule)
+	rules, err := NewRoutingRuleStore(ctx, store, NewMockLogger())
+	require.NoError(t, err)
+	requestCtx := scopedCtx("vk-1", "", "", "")
+
+	require.True(t, rules.AllowsRequest(requestCtx, "coding", "deepseek", "deepseek-v4-flash"))
+	require.Equal(t, []string{"coding"}, rules.ListedRuleNames(requestCtx, []string{"coding"}))
+
+	renamed := ruleTo("rule-rename", "coding-v2", "global", nil, true, "deepseek", "deepseek-v4-flash")
+	require.NoError(t, store.UpdateRoutingRule(ctx, renamed))
+	require.NoError(t, rules.Reload(ctx, renamed.ID))
+
+	assert.False(t, rules.AllowsRequest(requestCtx, "coding", "deepseek", "deepseek-v4-flash"), "the old name stops opening the rule")
+	assert.True(t, rules.AllowsRequest(requestCtx, "coding-v2", "deepseek", "deepseek-v4-flash"))
+	assert.Equal(t, []string{"coding-v2"}, rules.ListedRuleNames(requestCtx, []string{"coding", "coding-v2"}))
 }

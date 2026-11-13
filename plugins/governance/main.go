@@ -1639,6 +1639,12 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	if requestType == schemas.ListModelsRequest && result != nil && result.ListModelsResponse != nil &&
 		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(ctx, access, result.ListModelsResponse.Data)
+		// The block replaces the page with the whole listing, so the provider's cursor no longer
+		// points at anything this response withheld: following it would fetch a page the caller has
+		// already been shown whole, or one that adds nothing and reads as a truncation.
+		if access.ListedModels() != nil {
+			result.ListModelsResponse.NextPageToken = ""
+		}
 	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)

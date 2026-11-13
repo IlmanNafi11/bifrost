@@ -7490,6 +7490,14 @@ func sanitizeVirtualKeyListedModels(vk *configstoreTables.TableVirtualKey) {
 	}
 	kept := make([]configstoreTables.TableListedModelEntry, 0, len(vk.ListedModels))
 	keptRules := make(map[string]bool, len(vk.ListedModels))
+	// A model entry names a provider the key configures, the same rule the management API applies.
+	// allow_all_providers widens which providers the key may reach, not which models a block lists,
+	// so a model entry for a provider the key has no config for would be stored and shown and then
+	// refused on every call: it is dropped here rather than left to fail closed at request time.
+	configured := make(map[string]bool, len(vk.ProviderConfigs))
+	for i := range vk.ProviderConfigs {
+		configured[vk.ProviderConfigs[i].Provider] = true
+	}
 	for i, entry := range vk.ListedModels {
 		entry.Provider = strings.TrimSpace(entry.Provider)
 		entry.Model = strings.TrimSpace(entry.Model)
@@ -7500,6 +7508,10 @@ func sanitizeVirtualKeyListedModels(vk *configstoreTables.TableVirtualKey) {
 		}
 		if err := configstoreTables.ValidateVirtualKeyListedModels([]configstoreTables.TableListedModelEntry{entry}); err != nil {
 			logger.Warn("virtual key %s: dropping listed_models entry %d: %v", vk.ID, i, err)
+			continue
+		}
+		if !entry.IsRule() && !configured[entry.Provider] {
+			logger.Warn("virtual key %s: dropping listed_models entry %d: provider %q is not configured on this key", vk.ID, i, entry.Provider)
 			continue
 		}
 		if entry.IsRule() {

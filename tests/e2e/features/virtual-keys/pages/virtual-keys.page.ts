@@ -193,7 +193,7 @@ export class VirtualKeysPage extends BasePage {
   /**
    * Open the row actions dropdown and click Edit.
    */
-  protected async openVirtualKeyEditor(name: string): Promise<void> {
+  async openVirtualKeyEditor(name: string): Promise<void> {
     await this.searchVirtualKeys(name);
 
     const row = this.getVirtualKeyRow(name);

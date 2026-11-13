@@ -6539,6 +6539,24 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	// must be set before requestHandler() is called.
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
 
+	// A model probe is hidden from provider stats, so every observability connector needs to see
+	// that on the completed trace: the flag lives on the context only while the request runs, and
+	// the connector is handed the trace after it. A probe that does not stream (embedding, rerank,
+	// video) reaches no other stamp, and the management endpoint it enters by is not behind the
+	// tracing middleware, so the trace it needs is created here.
+	if IsModelProbe(ctx) {
+		traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+		if traceID == "" {
+			if traceID = tracer.CreateTrace(""); traceID != "" {
+				ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+				ctx.SetValue(schemas.BifrostContextKeyExportTraceID, traceID)
+			}
+		}
+		if traceID != "" {
+			tracer.SetTraceAttribute(traceID, schemas.TraceAttrIsModelProbe, true)
+		}
+	}
+
 	// "pipeline-pre" overhead phase: the LLM pre-hook pipeline glue (loop + pool
 	// around the per-plugin spans that nest inside it), previously part of the residual.
 	prePipeSpan := bifrost.startCoreSpan(ctx, "pipeline-pre")

@@ -63,3 +63,35 @@ test.describe('Listed Models', () => {
     await expect(virtualKeysPage.saveBtn).toBeEnabled()
   })
 })
+
+// The list endpoint leaves `listed_models` out, so the editor's baseline has to come from the
+// single-key GET. Without that, reopening a key shows the switch off whatever the server stored,
+// and the next Save quietly turns the block off - turning a deny-all key back into a key that can
+// call every model its provider configs allow.
+test('reopening a saved key shows the stored block, not the off state', async ({ virtualKeysPage }) => {
+  await virtualKeysPage.dismissToasts()
+  const name = `Listed Models Round Trip ${Date.now()}`
+
+  await virtualKeysPage.createBtn.click()
+  await expect(virtualKeysPage.sheet).toBeVisible()
+  await virtualKeysPage.waitForSheetAnimation()
+
+  const editorSwitch = virtualKeysPage.page.getByTestId('vk-listed-models-switch')
+  const emptyHint = virtualKeysPage.page.getByTestId('vk-listed-models-empty')
+  const offHint = virtualKeysPage.page.getByTestId('vk-listed-models-off-hint')
+
+  await virtualKeysPage.nameInput.fill(name)
+  await editorSwitch.scrollIntoViewIfNeeded()
+  await editorSwitch.click()
+  await expect(emptyHint).toBeVisible()
+  await expect(virtualKeysPage.saveBtn).toBeEnabled()
+  await virtualKeysPage.saveBtn.click()
+  await expect(virtualKeysPage.sheet).toBeHidden()
+
+  // Reopen the same key from the table and let the detail query land.
+  await virtualKeysPage.openVirtualKeyEditor(name)
+
+  await virtualKeysPage.page.getByTestId('vk-listed-models-switch').scrollIntoViewIfNeeded()
+  await expect(emptyHint).toBeVisible()
+  await expect(offHint).toHaveCount(0)
+})

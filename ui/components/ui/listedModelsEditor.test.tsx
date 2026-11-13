@@ -1,7 +1,8 @@
 /**
  * Scope: render-only structural checks via `renderToStaticMarkup`. No React lifecycle runs here, so
- * add/remove clicks are NOT exercised at this level — those go through the Playwright specs in
- * `tests/e2e/features/virtual-keys/`. The picker and validation rules the editor leans on are pure
+ * add/remove clicks are NOT exercised at this level — those go through the Playwright spec in
+ * `tests/e2e/features/virtual-keys/virtual-keys-listed-models.spec.ts`. The picker and the rules the
+ * editor leans on are pure
  * and covered by `lib/utils/listedModels.test.ts`. Keep additions here to markup, ordering and testids.
  */
 import type { RoutingRule } from "@/lib/types/routingRules";
