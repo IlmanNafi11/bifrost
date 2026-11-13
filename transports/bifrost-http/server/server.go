@@ -1534,10 +1534,6 @@ func (s *BifrostHTTPServer) reloadGovernanceRoutingRule(ctx context.Context, id 
 		logger.Warn("governance plugin not found; routing rule %s not refreshed in the listing cache: %v", id, err)
 		return
 	}
-	if plugin == nil {
-		logger.Warn("governance plugin not found; routing rule %s not refreshed in the listing cache", id)
-		return
-	}
 	store := plugin.GetGovernanceStore()
 	if store == nil || store.RoutingRules() == nil {
 		return
@@ -1553,10 +1549,6 @@ func (s *BifrostHTTPServer) removeGovernanceRoutingRule(id string) {
 	plugin, err := s.getGovernancePlugin()
 	if err != nil {
 		logger.Warn("governance plugin not found; removed routing rule %s still cached for listings: %v", id, err)
-		return
-	}
-	if plugin == nil {
-		logger.Warn("governance plugin not found; removed routing rule %s still cached for listings", id)
 		return
 	}
 	store := plugin.GetGovernanceStore()

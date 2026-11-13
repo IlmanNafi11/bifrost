@@ -833,6 +833,9 @@ function TargetRow({ target, index, referencedProviderOptions, allKeys, showRemo
 							/>
 						</div>
 						{target.provider && target.model && !target.model.includes("*") && (
+							// No mode is passed: a rule's target may name a model the catalog has no row for, so
+							// the server resolves the mode the same way it does for a real request and refuses one
+							// it cannot probe before spending anything. Only a catalog row knows its mode up front.
 							<ModelTestButton provider={target.provider} model={target.model} keyId={target.key_id} className="h-9 px-2" />
 						)}
 						{target.model && (

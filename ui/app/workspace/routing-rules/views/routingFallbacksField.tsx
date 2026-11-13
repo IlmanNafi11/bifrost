@@ -64,6 +64,8 @@ function FallbackRow({ fallback, index, referencedProviderOptions, allKeys, onUp
 						className="!h-9 !min-h-9 w-full"
 					/>
 				</div>
+				{/* As in the rule's targets, the mode is the server's to resolve: this row may name a model the
+				    catalog has no datasheet entry for, and a mode it cannot probe is refused before any spend. */}
 				{probeable && <ModelTestButton provider={provider} model={fallback.model} keyId={fallback.key_id} className="h-9 px-2" />}
 				<Button
 					type="button"
