@@ -259,9 +259,13 @@ func decodeProbe(t *testing.T, ctx *fasthttp.RequestCtx) ModelTestResponse {
 func TestModelProbe_ChatSuccessReportsTTFTAndTotal(t *testing.T) {
 	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
 	h, observer := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
+	r := router.New()
+	h.RegisterRoutes(r)
 
+	// Dispatch through the registered route rather than calling the handler body, so the success
+	// path also pins that POST /api/models/test reaches it.
 	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
-	h.testModel(ctx)
+	r.Handler(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 
 	response := decodeProbe(t, ctx)
@@ -458,18 +462,6 @@ func TestModelProbe_KeyIDIsPinnedAndReported(t *testing.T) {
 	defer observer.mu.Unlock()
 	require.NotEmpty(t, observer.isProbe)
 	assert.Equal(t, "key-openai", observer.keyID)
-}
-
-func TestModelProbe_RouteIsRegistered(t *testing.T) {
-	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
-	h, _ := newProbeHandler(t, chatUpstream(t, 0, nil).URL, catalog)
-	r := router.New()
-	h.RegisterRoutes(r)
-
-	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
-	r.Handler(ctx)
-	assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "POST /api/models/test must be routed to the handler: %s", ctx.Response.Body())
-	assert.True(t, decodeProbe(t, ctx).OK)
 }
 
 // responsesUpstream streams one output-text delta and a terminal event.

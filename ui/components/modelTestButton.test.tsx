@@ -48,3 +48,19 @@ it("is disabled while its probe is unanswered", () => {
 
 	expect(html).toContain('disabled=""');
 });
+
+// A probe in flight advertises itself as busy rather than as a mode the endpoint cannot take:
+// the spinner and the aria-busy mark are what tell a second click (or a screen reader) that the
+// answer is on the way, and neither may appear when the mode alone disables the row.
+it("marks an in-flight probe busy and idle probes not busy", () => {
+	probeState.loading = true;
+	const busy = renderToStaticMarkup(<ModelTestButton provider="openai" model="gpt-4o-mini" mode="chat" />);
+	probeState.loading = false;
+	const idle = renderToStaticMarkup(<ModelTestButton provider="openai" model="gpt-4o-mini" mode="chat" />);
+
+	expect(busy).toContain("animate-spin");
+	expect(idle).not.toContain("animate-spin");
+
+	const unsupported = renderToStaticMarkup(<ModelTestButton provider="openai" model="dall-e-3" mode="image_generation" />);
+	expect(unsupported).not.toContain("animate-spin");
+});

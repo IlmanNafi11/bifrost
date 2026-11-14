@@ -106,11 +106,19 @@ test.describe("Model Catalog - Model Probe", () => {
 		// The probe is one real provider call; its verdict and the request the UI builds are what
 		// this spec pins, so the answer is stubbed.
 		let probedBody: { provider: string; model: string } | undefined;
+		// The answer is held open so the in-flight state can be observed: an unanswered probe must
+		// disable the button, or a second click would spend a second real provider call. Executor
+		// form, not Promise.withResolvers: this project's lib target predates es2024.
+		let releaseProbe: () => void = () => {};
+		const probeHeld = new Promise<void>((resolve) => {
+			releaseProbe = resolve;
+		});
 		await page.route("**/api/models/test", async (route) => {
 			probedBody = route.request().postDataJSON() as {
 				provider: string;
 				model: string;
 			};
+			await probeHeld;
 			await route.fulfill({
 				status: 200,
 				contentType: "application/json",
@@ -133,12 +141,18 @@ test.describe("Model Catalog - Model Probe", () => {
 		await expect(chatRow).toBeVisible();
 		await expect(imageRow).toBeVisible();
 
-		const chatTest = chatRow.getByTestId("model-test-button");
+		const chatTest = chatRow.getByTestId("model-catalog-test-gpt-4o-mini-probe-test-openai");
 		await expect(chatTest).toBeEnabled();
-		await expect(imageRow.getByTestId("model-test-button")).toBeDisabled();
+		await expect(imageRow.getByTestId("model-catalog-test-dall-e-3-probe-test-openai")).toBeDisabled();
 
 		await chatTest.click();
 
+		// While the probe is unanswered the button is disabled and its spinner is the only
+		// affordance left: a click that still fired would bill the provider a second time.
+		await expect(chatTest).toBeDisabled();
+		await expect(chatTest.locator(".animate-spin")).toBeVisible();
+
+		releaseProbe();
 		const toast = page.locator('[data-sonner-toast][data-type="success"]').first();
 		await expect(toast).toBeVisible();
 		await expect(toast).toContainText("TTFT 90 ms");
