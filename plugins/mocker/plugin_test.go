@@ -530,3 +530,38 @@ func TestMockerPlugin_ValidationErrors(t *testing.T) {
 		})
 	}
 }
+
+// A model probe measures the provider, not a fixture. The mocker answers every matched request from
+// its rule, so without the guard a dead model would come back ok:true at mock latency and the
+// operator would ship it.
+func TestMockerPlugin_DoesNotAnswerAModelProbe(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	config := MockerConfig{Enabled: true}
+	plugin, err := Init(config)
+	if err != nil {
+		t.Fatalf("Expected no error creating plugin, got: %v", err)
+	}
+
+	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
+		Account:    &BaseAccount{},
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	response, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: bifrost.Ptr("hi")},
+		}},
+	})
+	if bifrostErr == nil && response != nil && len(response.Choices) > 0 {
+		t.Fatalf("a probe must reach the provider, not be short-circuited by a mock")
+	}
+}

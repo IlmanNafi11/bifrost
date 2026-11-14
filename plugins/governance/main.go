@@ -791,8 +791,15 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// Step 1: was any authentication presented at all? A credential that was presented and turned out to
 	// grant nothing is a different answer, reported by the identity step below; telling a caller who
 	// supplied a key to supply one is not a useful refusal.
+	//
+	// A model probe is the one request this setting cannot speak for. It is started from the dashboard
+	// by an authenticated local admin, spends the deployment's own provider credentials rather than a
+	// tenant's, and carries no virtual key by design - which is also why it consumes no budget.
+	// Requiring one here would refuse every probe on a deployment that mandates virtual keys, and the
+	// probe endpoint's own admin-and-not-auth-bypassed check is the admission question that applies to
+	// it. Step 2 still runs, so a probe that did present a credential resolving to nothing is refused.
 	p.cfgMutex.RLock()
-	if !PresentedAnyCredential(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !bifrost.IsModelProbe(ctx) && !PresentedAnyCredential(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -1641,8 +1648,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		result.ListModelsResponse.Data = p.filterModelsForAccess(ctx, access, result.ListModelsResponse.Data)
 		// The block replaces the page with the whole listing, so the provider's cursor no longer
 		// points at anything this response withheld: following it would fetch a page the caller has
-		// already been shown whole, or one that adds nothing and reads as a truncation.
-		if access.ListedModels() != nil {
+		// already been shown whole, or one that adds nothing and reads as a truncation. A credential
+		// that resolved to no access at all is on this branch too (the presented arm above), and it
+		// holds no listing to clear a cursor for.
+		if access != nil && access.ListedModels() != nil {
 			result.ListModelsResponse.NextPageToken = ""
 		}
 	}

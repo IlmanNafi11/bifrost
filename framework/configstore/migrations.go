@@ -16371,14 +16371,20 @@ func migrationAddVirtualKeyListedModelsColumn(ctx context.Context, db *gorm.DB, 
 			}
 			return nil
 		},
-		Rollback: func(tx *gorm.DB) error {
-			return fmt.Errorf("add_virtual_key_listed_models_column is non-rollbackable: dropping listed_models would permanently delete every virtual key's model listing, and a NULL column reads as \"no restriction\", so it would also widen every key's access; the column is additive and older binaries safely ignore it")
-		},
+		Rollback: rollbackVirtualKeyListedModelsColumn,
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
 	}
 	return nil
+}
+
+// rollbackVirtualKeyListedModelsColumn refuses to drop the column. listed_models is the only home
+// for a key's model listing, and a NULL column does not read as "no data": it reads as "no
+// restriction", so a rollback would both delete the listing and silently widen every key that had
+// one. The column is additive and an older binary ignores it, which is what makes refusing safe.
+func rollbackVirtualKeyListedModelsColumn(*gorm.DB) error {
+	return fmt.Errorf("add_virtual_key_listed_models_column is non-rollbackable: dropping listed_models would permanently delete every virtual key's model listing, and a NULL column reads as \"no restriction\", so it would also widen every key's access; the column is additive and older binaries safely ignore it")
 }
 
 // migrationLockTimeout bounds how long a column migration waits for its table lock on postgres.

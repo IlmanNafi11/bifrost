@@ -255,7 +255,14 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 											</TableCell>
 											<TableCell className="px-1 py-3">
 												<div className="ml-6 flex items-center gap-1">
-													<ModelTestButton provider={m.provider} model={m.name} mode={m.mode} className="h-7 w-7" />
+													<ModelTestButton
+														provider={m.provider}
+														model={m.name}
+														mode={m.mode}
+														className="h-7 w-7"
+														testId={`model-catalog-test-${testKey}`}
+														disabled={!hasUpdateAccess}
+													/>
 													<Button
 														variant="ghost"
 														size="icon"

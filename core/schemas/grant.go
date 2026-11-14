@@ -283,25 +283,25 @@ func (e ListedModelEntry) ModelID() string {
 // list holding only "*" is unrestricted, an empty list holds nothing. Key IDs are identifiers
 // rather than names, so whoever selects a key matches them exactly; the case-folding membership
 // methods are for the model and tool lists.
+//
+// ListedModels is the narrower answer to "what may this holder see and call", layered on top of
+// AllowedModels rather than replacing it: a model has to pass both. nil means the source says
+// nothing and the listing restriction is off, which is what every permit that does not set it
+// carries; an empty list says the holder may call no model at all, only the routing rules its
+// permit names (see Permit.ListedRules). A listed model still has to be in AllowedModels: this
+// list can only narrow, never widen.
+//
+// KeyIDs composes with the other side's list, but only where that side also authorizes the request
+// for the provider: a permit the request is not proceeding on does not get to say which keys serve
+// it. Weight does not compose at all - there is no meaningful intersection of two preferences, so a
+// scoping permit that expresses one wins as the more specific context.
 type ProviderPermit struct {
 	Provider          string    // provider name, as configured
 	AllowedModels     WhiteList // ["*"] allows all models; empty allows none (deny by default)
 	BlacklistedModels BlackList // blocked models; wins over AllowedModels
-	// ListedModels is the narrower answer to "what may this holder see and call", layered on top of
-	// AllowedModels rather than replacing it: a model has to pass both. nil means the source says
-	// nothing and the listing restriction is off, which is what every permit that does not set it
-	// carries; an empty list says the holder may call no model at all, only the routing rules its
-	// permit names (see Permit.ListedRules). A listed model still has to be in AllowedModels: this
-	// list can only narrow, never widen.
-	ListedModels WhiteList
-	KeyIDs       WhiteList // ["*"] allows all keys of the provider; empty allows none.
-	//                             Composes with the other side's list, but only where that side also
-	//                             authorizes the request for the provider: a permit the request is not
-	//                             proceeding on does not get to say which keys serve it.
-	Weight *float64 // load-balancing weight; nil means the provider is not a load-balancing
-	//                  candidate. Unlike the permissions, this does not compose: there is no
-	//                  meaningful intersection of two preferences, so a scoping permit that
-	//                  expresses one wins as the more specific context.
+	ListedModels      WhiteList // nil leaves the listing unrestricted; see the type comment
+	KeyIDs            WhiteList // ["*"] allows all keys of the provider; empty allows none.
+	Weight            *float64  // load-balancing weight; nil means the provider is not a candidate
 }
 
 // MCPPermit is permission to execute tools of one MCP client.

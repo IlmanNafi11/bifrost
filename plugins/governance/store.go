@@ -1575,7 +1575,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 			KeyIDs:            config.KeyIDs(),
 			Weight:            config.Weight,
 		}
-		pp.ListedModels = listedModelsForProvider(vk.ListedModels, config.Provider)
+		pp.ListedModels = listedForProvider(vk.ListedModels, config.Provider, false)
 		providerPermits = append(providerPermits, pp)
 	}
 	if vk.AllowAllProviders && gs.inMemoryStore != nil {

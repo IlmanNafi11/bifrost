@@ -43,6 +43,12 @@ func TestGenerateVirtualKeyHashCoversListedModels(t *testing.T) {
 	}
 	base := tables.TableVirtualKey{ID: "vk-lm", Name: "prod", Value: *schemas.NewSecretVar("sk-bf-lm")}
 	plain := hash(base)
+	// Fixed literal, like TestGenerateRelayHash below: the hash of a key with no block is what every
+	// pre-existing key carries, and a formula change that moved it would re-sync all of them from
+	// config.json on the next start, overwriting dashboard edits. Changing this value is a decision,
+	// not a side effect.
+	require.Equal(t, "70a4a584985898937ec36f5be12f56e1f6d97a53b66405e6cb77436515cf6358", plain,
+		"the no-block hash is pinned; moving it re-syncs every existing key from config.json")
 	// A key from before the column has no block at all and must keep the hash it had, or every
 	// existing key would re-sync from config.json on upgrade. An explicit empty block is not that
 	// key: "[]" denies every model, so hashing it like "absent" would leave a config.json that adds

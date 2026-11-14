@@ -823,8 +823,8 @@ export class RoutingRulesPage extends BasePage {
    */
   getTestButton(row: number | "target"): Locator {
     return row === "target"
-      ? this.sheet.getByTestId("routing-target-0").getByTestId("model-test-button")
-      : this.sheet.getByTestId(`routing-fallback-${row}`).getByTestId("model-test-button");
+      ? this.sheet.getByTestId("routing-target-0-model-test")
+      : this.sheet.getByTestId(`routing-fallback-${row}-model-test`);
   }
 
   /**

@@ -17,15 +17,29 @@ interface ModelTestButtonProps {
 	// the server selects a key exactly as it would for a real request.
 	keyId?: string;
 	className?: string;
+	// data-testid for the button. Each surface passes its own, so a row can be addressed from outside
+	// (routing-target-{i}-model-test, model-catalog-test-{key}), per the repo's testid convention.
+	testId?: string;
+	// A caller that knows the user lacks the access the endpoint requires passes this, so the control
+	// is visibly unavailable instead of 403ing after a click. The server still enforces it.
+	disabled?: boolean;
 }
 
 // ModelTestButton sends one probe and reports the verdict as a toast. The server
 // hides the probe from logs, cost and stats, so this is the only place the result
 // is ever shown.
-export function ModelTestButton({ provider, model, mode, keyId, className }: ModelTestButtonProps) {
+export function ModelTestButton({
+	provider,
+	model,
+	mode,
+	keyId,
+	className,
+	testId = "model-test-button",
+	disabled = false,
+}: ModelTestButtonProps) {
 	const { t } = useTranslation("models");
 	const [testModel, { isLoading }] = useTestModelMutation();
-	const probeable = isModeProbeable(mode);
+	const probeable = isModeProbeable(mode) && !disabled;
 	const label = `${provider}/${model}`;
 
 	const run = async () => {
@@ -48,7 +62,7 @@ export function ModelTestButton({ provider, model, mode, keyId, className }: Mod
 			className={className}
 			disabled={!probeable || isLoading}
 			aria-label={t("modelTest.aria", { label })}
-			data-testid="model-test-button"
+			data-testid={testId}
 			onClick={() => void run()}
 		>
 			{isLoading ? <Loader2 className="animate-spin" /> : <Play />}
@@ -56,6 +70,9 @@ export function ModelTestButton({ provider, model, mode, keyId, className }: Mod
 	);
 
 	if (probeable) return button;
+	// The tooltip explains why a click does nothing; a caller-driven disable has no reason to give,
+	// so the button is rendered plainly rather than with a mode explanation that would be wrong.
+	if (disabled) return button;
 	return (
 		<TooltipProvider>
 			<Tooltip>

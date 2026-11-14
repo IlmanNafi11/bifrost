@@ -397,7 +397,7 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 			KeyIDs:        schemas.WhiteList{"*"},
 		}
 		if listed != nil {
-			pp.ListedModels = listedForProvider(listed, provider)
+			pp.ListedModels = listedForProvider(listed, provider, true)
 		}
 		permits = append(permits, pp)
 	}
@@ -408,27 +408,13 @@ func AppendAllProviderPermits(permits []schemas.ProviderPermit, configured []str
 // is off for the key.
 type modelsBlock = []configstoreTables.TableListedModelEntry
 
-// listedForProvider is the block's models for one provider, always non-nil: a provider the block
-// does not name was listed to nothing, not left unrestricted.
-func listedForProvider(entries modelsBlock, provider string) schemas.WhiteList {
-	models := make(schemas.WhiteList, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Provider == provider && entry.Model != "" {
-			models = append(models, entry.Model)
-		}
-	}
-	return models
-}
-
-// listedModelsForProvider returns the models a key's listed_models block names for provider, or nil
-// when the block says nothing about that provider. The two answers are not the same: nil leaves the
-// listing restriction off, while an empty non-nil slice lists no model and so permits none of them.
-//
-// A key that has the block at all but names no model of provider is on the second side of that line:
-// its listing is authoritative, and that provider's models are not in it. That is what makes a block
-// of rules alone deny every model, and it is why the empty slice is returned rather than nil.
-func listedModelsForProvider(entries []configstoreTables.TableListedModelEntry, provider string) schemas.WhiteList {
-	if entries == nil {
+// listedForProvider is the block's models for one provider. nonNil decides the two answers the
+// callers need: true returns an empty slice for a provider the block does not name (that provider
+// was listed to nothing, not left unrestricted), false returns nil (the block says nothing about it).
+// The empty and nil answers are not the same - nil leaves the listing restriction off, an empty
+// non-nil slice permits none of them - so the caller picks which one its layer means.
+func listedForProvider(entries []configstoreTables.TableListedModelEntry, provider string, nonNil bool) schemas.WhiteList {
+	if entries == nil && !nonNil {
 		return nil
 	}
 	models := make(schemas.WhiteList, 0, len(entries))

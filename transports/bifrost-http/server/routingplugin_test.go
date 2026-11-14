@@ -88,3 +88,83 @@ func TestReloadAndRemoveRoutingRuleRefreshTheGovernanceRuleCache(t *testing.T) {
 	require.NoError(t, server.RemoveRoutingRule(ctx, rule.ID))
 	assert.False(t, cache.AllowsRequest(ctx, "coding", "deepseek", "deepseek-v4-flash"), "a delete must reach the governance cache")
 }
+
+// A rule the governance cache cannot refresh must stop opening its targets rather than keep the
+// definition it had before the edit. The cache is the authorization answer for a key's
+// listed_models block, so keeping a definition the operator just moved away from is a fail-open
+// answer that would last until the next restart. The routing plugin is deliberately absent here,
+// which is the same state a deployment without routing, or a failed routing delete, presents.
+func TestRemoveRoutingRuleDropsTheGovernanceCacheWithoutTheRoutingPlugin(t *testing.T) {
+	ctx := t.Context()
+	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID: "rule-9", Name: "coding", Scope: "global", CelExpression: "true",
+		Enabled: bifrost.Ptr(true),
+		Targets: []configstoreTables.TableRoutingTarget{{
+			Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1,
+		}},
+	}
+	configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/rules.db"},
+	}, log)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+	require.NoError(t, configStore.CreateRoutingRule(ctx, rule))
+
+	// Built after the rule exists, so the cache knows the definition it is about to lose.
+	govPlugin, err := governance.Init(ctx, nil, log, configStore, nil, nil, nil, nil)
+	require.NoError(t, err)
+	cache := govPlugin.GetGovernanceStore().RoutingRules()
+	require.NotNil(t, cache)
+	require.True(t, cache.AllowsRequest(ctx, "coding", "deepseek", "deepseek-v4-flash"))
+
+	holders := []schemas.BasePlugin{govPlugin}
+	server := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: configStore}, Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline)}
+	server.Config.BasePlugins.Store(&holders)
+
+	err = server.RemoveRoutingRule(ctx, rule.ID)
+	require.Error(t, err, "the routing plugin is absent, which the caller already treats as non-fatal")
+	assert.False(t, cache.AllowsRequest(ctx, "coding", "deepseek", "deepseek-v4-flash"),
+		"a rule removed from the database must stop opening its targets even when routing cannot confirm it")
+}
+
+// A refresh that cannot read the rule drops the cached definition instead of keeping the old one.
+func TestReloadRoutingRuleDropsTheDefinitionItCouldNotRead(t *testing.T) {
+	ctx := t.Context()
+	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
+
+	rule := &configstoreTables.TableRoutingRule{
+		ID: "rule-10", Name: "writer", Scope: "global", CelExpression: "true",
+		Enabled: bifrost.Ptr(true),
+		Targets: []configstoreTables.TableRoutingTarget{{
+			Provider: bifrost.Ptr("openai"), Model: bifrost.Ptr("gpt-5.4"), Weight: 1,
+		}},
+	}
+	configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/rules.db"},
+	}, log)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+	require.NoError(t, configStore.CreateRoutingRule(ctx, rule))
+
+	govPlugin, err := governance.Init(ctx, nil, log, configStore, nil, nil, nil, nil)
+	require.NoError(t, err)
+	cache := govPlugin.GetGovernanceStore().RoutingRules()
+	require.True(t, cache.AllowsRequest(ctx, "writer", "openai", "gpt-5.4"))
+
+	holders := []schemas.BasePlugin{govPlugin}
+	server := &BifrostHTTPServer{Config: &lib.Config{ConfigStore: configStore}, Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline)}
+	server.Config.BasePlugins.Store(&holders)
+
+	// The row is gone from the database while the cache still holds it, so the refresh finds
+	// nothing to publish and must not leave the old definition behind.
+	require.NoError(t, configStore.DeleteRoutingRule(ctx, rule.ID))
+	server.reloadGovernanceRoutingRule(ctx, rule.ID)
+	assert.False(t, cache.AllowsRequest(ctx, "writer", "openai", "gpt-5.4"),
+		"a definition the refresh could not read must not keep answering")
+}

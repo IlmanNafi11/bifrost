@@ -523,6 +523,11 @@ func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if ok && skipMocker {
 		return req, nil, nil
 	}
+	// A model probe measures the provider, not a fixture: answering it from a mock would report a
+	// dead model as ok:true with a latency that never left the process.
+	if bifrost.IsModelProbe(ctx) {
+		return req, nil, nil
+	}
 
 	if req.RequestType != schemas.ChatCompletionRequest &&
 		req.RequestType != schemas.ChatCompletionStreamRequest &&

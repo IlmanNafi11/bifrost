@@ -4771,6 +4771,31 @@ func TestMigrationAddVirtualKeyListedModelsColumn(t *testing.T) {
 // A key written before the column existed is the case an in-place upgrade actually hits: the
 // migration has to leave its row readable and its block absent, which is what keeps the feature off
 // for every key that never declared one.
+// TestMigrationAddVirtualKeyListedModelsColumn_NonRollbackable pins that rolling the column back is
+// refused rather than performed. Unlike a column holding cosmetic state, this one decides what a key
+// may call: dropping it deletes every listing and turns "listed to nothing" into "unrestricted" for
+// every key that had one. The refusal must be loud and leave the column and its rows in place.
+func TestMigrationAddVirtualKeyListedModelsColumn_NonRollbackable(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	require.NoError(t, migrationAddVirtualKeyListedModelsColumn(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableVirtualKey{}, "listed_models"))
+
+	// A key narrowed to one model is exactly the state a rollback would widen.
+	require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys (id, name, created_at, updated_at, listed_models)
+		VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`,
+		"vk-listed", "Listed", `[{"provider":"openai","model":"gpt-5.4"}]`).Error)
+
+	err := rollbackVirtualKeyListedModelsColumn(db)
+	require.Error(t, err, "rollback must refuse: dropping the column widens every key that had a block")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, db.Migrator().HasColumn(&tables.TableVirtualKey{}, "listed_models"),
+		"a refused rollback must leave the column intact")
+
+	var stored string
+	require.NoError(t, db.Raw("SELECT listed_models FROM governance_virtual_keys WHERE id = ?", "vk-listed").Scan(&stored).Error)
+	assert.Contains(t, stored, "gpt-5.4", "the listing must survive the refused rollback")
+}
+
 func TestMigrationAddVirtualKeyListedModelsColumnKeepsExistingRows(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

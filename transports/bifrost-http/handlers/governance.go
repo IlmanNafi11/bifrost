@@ -2213,6 +2213,11 @@ func stringOrEmpty(value *string) string {
 // rather than a list of wishes. The cap, the model-or-rule exclusivity and the wildcard refusal are
 // checked by configstoreTables.ValidateVirtualKeyListedModels, so this only adds the cross-entity
 // checks; it calls that validator last so both agree.
+//
+// This runs on an admin write, never on the request path: it reads every routing rule and builds a
+// per-provider restriction map, which is fine for a create/update someone is waiting on and would be
+// wrong to call per inference request. The runtime question - may this key call this model - is
+// answered by the permits built at load (governance/store.go) and the rule cache, not by this.
 func (h *GovernanceHandler) validateListedModelsBody(
 	ctx context.Context,
 	entries []listedModelBody,

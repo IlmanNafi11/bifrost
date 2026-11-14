@@ -179,7 +179,8 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 	}
 	probeCtx, probeCancel := schemas.NewBifrostContextWithTimeout(bifrostCtx, timeout)
 	defer probeCancel()
-	response := h.runModelProbe(probeCtx, payload.Provider, payload.Model, mode)
+	response := h.runModelProbe(probeCtx, payload.Provider, payload.Model, mode, timeout)
+	finishProbeTrace(probeCtx)
 	writeProbeAuditLine(probeAuditEvent{
 		Principal: caller,
 		Provider:  string(payload.Provider),
@@ -191,6 +192,20 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 		KeyName:   response.KeyName,
 	})
 	SendJSON(ctx, response)
+}
+
+// finishProbeTrace ends the trace a probe created through core and hands it to the observability
+// connectors. The probe enters by the management API, whose routes carry no tracing middleware, and
+// the logging plugin that would otherwise complete a trace skips probes, so without this a probe
+// leaves its trace in the store until the TTL sweep exports it as a completion that never arrived.
+// The probe run is over by the time this is called, so nothing can still be adding to the trace;
+// a client that was given no tracer stamps no trace ID and this does nothing.
+func finishProbeTrace(ctx *schemas.BifrostContext) {
+	tracer, traceID, err := bifrost.GetTracerFromContext(ctx)
+	if err != nil || tracer == nil {
+		return
+	}
+	tracer.CompleteAndFlushTrace(traceID)
 }
 
 // modelProbeMode resolves the mode to probe from the catalog, defaulting to chat
@@ -206,8 +221,11 @@ func (h *ProviderHandler) modelProbeMode(provider schemas.ModelProvider, model s
 
 // runModelProbe dispatches one probe and turns the outcome into a verdict. The
 // measured result is filled in even when the provider refused the call, so the
-// caller can report the key and the mode that were actually exercised.
-func (h *ProviderHandler) runModelProbe(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, mode string) *ModelTestResponse {
+// caller can report the key and the mode that were actually exercised. timeout is the
+// deadline this probe ran under, reported in the timeout verdict: a handler built
+// without one, or a test that shortens it, must name the deadline that applied rather
+// than a zero or a stale configured value.
+func (h *ProviderHandler) runModelProbe(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, mode string, timeout time.Duration) *ModelTestResponse {
 	response := &ModelTestResponse{
 		Mode:     mode,
 		Model:    model,
@@ -222,7 +240,7 @@ func (h *ProviderHandler) runModelProbe(ctx *schemas.BifrostContext, provider sc
 
 	switch {
 	case isProbeTimeout(ctx, probeErr):
-		response.Error = fmt.Sprintf("probe timed out after %s", h.probeTimeout)
+		response.Error = fmt.Sprintf("probe timed out after %s", timeout)
 		response.TimedOut = true
 	case probeErr != nil:
 		// A provider's refusal can quote the credential it rejected; the probe verdict is shown in
@@ -426,24 +444,26 @@ func drainProbeStream(ctx *schemas.BifrostContext, stream chan *schemas.BifrostS
 }
 
 // isProbeTimeout reports whether the probe stopped because its own deadline expired, which is the
-// verdict the operator needs rather than the bare context error a provider may echo. The check is on
-// the error itself (context.DeadlineExceeded chained, or named in the message) because a client that
-// cancels its own request also leaves ctx.Err() non-nil, and that is a cancelled probe, not a slow
-// provider. A nil error with an expired context means the stream ended without a verdict.
+// verdict the operator needs rather than the bare context error a provider may echo.
+//
+// The probe's own context is authoritative. A provider that answers "context deadline exceeded" on
+// its own — its upstream timed out, or a message happens to quote the phrase — is reporting a
+// provider failure, not a probe that outlived its budget, so the text alone is not enough: it only
+// counts when this probe's deadline has actually expired. A nil error under an expired context means
+// the stream ended without a verdict, which is the same timeout seen from the drain's side.
 func isProbeTimeout(ctx *schemas.BifrostContext, probeErr *schemas.BifrostError) bool {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) && probeErr == nil {
-		return true
+	expired := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	if probeErr == nil {
+		return expired
 	}
-	if probeErr == nil || probeErr.Error == nil {
+	if probeErr.Error == nil {
 		return false
 	}
-	if probeErr.Error.Message == "" {
-		return false
-	}
-	if errors.Is(probeErr.Error.Error, context.DeadlineExceeded) {
+	// The drain reports its own cancellation with the context's error chained, so that arm is exact.
+	if probeErr.Error.Error != nil && errors.Is(probeErr.Error.Error, context.DeadlineExceeded) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(probeErr.Error.Message), context.DeadlineExceeded.Error())
+	return expired && probeErr.Error.Message == context.DeadlineExceeded.Error()
 }
 
 // Probe admission bounds. A probe is spend without traffic: it is hidden from logs, cost and
@@ -600,11 +620,13 @@ func probePrincipal(ctx *fasthttp.RequestCtx) string {
 // provider error. Empty when the key is unknown or its value is not a readable literal (a
 // credential resolved from the environment or a vault has nothing here to replace).
 func (h *ProviderHandler) providerKeyLiteral(provider schemas.ModelProvider, keyID string) string {
-	if h.inMemoryStore == nil || h.inMemoryStore.Providers == nil {
+	if h.inMemoryStore == nil {
 		return ""
 	}
-	config, ok := h.inMemoryStore.Providers[provider]
-	if !ok {
+	// Read through the store's locked accessor: provider configs and their keys are replaced under
+	// Config.Mu by the provider and key CRUD paths, and an unlocked read here would race a reload.
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil || config == nil {
 		return ""
 	}
 	for i := range config.Keys {
@@ -616,28 +638,41 @@ func (h *ProviderHandler) providerKeyLiteral(provider schemas.ModelProvider, key
 }
 
 // probeCredentialPattern matches provider-key-shaped literals a provider may echo back in an error
-// (`sk-...` for OpenAI/Anthropic/OpenRouter, and long base64/hex-looking bearer blobs). It is the
-// last line of defence: the pinned path seeds the request's redaction map with the exact literal,
-// and the unpinned path relies on the pipeline to, but a provider that refuses before key selection
-// completes can still echo the credential into a verdict with no redaction map present. Anything
-// matching this shape is scrubbed rather than returned to the dashboard.
-var probeCredentialPattern = regexp.MustCompile(`sk-[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{40,}`)
+// (`sk-...` for OpenAI/Anthropic/OpenRouter, the other vendors' `ak-`/`key-`/`hf_` prefixes, and long
+// unbroken hex/base64 blobs). It is the last line of defence: the pinned path seeds the request's
+// redaction map with the exact literal, and the unpinned path relies on the pipeline to, but a
+// provider that refuses before key selection completes can still echo the credential into a verdict
+// with no redaction map present.
+//
+// The bare-alpha run is bounded by a digit or a mixed case, because model and artifact names are long
+// too (`openai/gpt-4o-mini-2024-07-18`, base64 image ids) and redacting those would hide the answer
+// the operator pressed the button to get. A secret is a key shape, not merely a long word.
+var probeCredentialPattern = regexp.MustCompile(
+	`(?i)(?:sk|ak|key|hf|pk)[-_][A-Za-z0-9_\-]{8,}|\b[0-9a-fA-F]{32,}\b|\b[A-Za-z0-9+/_\-]{40,}={0,2}\b`,
+)
+
+// probeMixedAlnumPattern narrows the base64 arm the same way: a long run of only letters (a hyphenated
+// model name, a word chain) is not a credential, while one carrying digits or mixed case is.
+var probeMixedAlnumPattern = regexp.MustCompile(`\d|[a-z][A-Z]|[A-Z][a-z]`)
 
 // redactProbeError passes a provider error through the request's redaction data, so a message that
 // quotes the credential a provider rejected or any other request content leaves the endpoint the
-// same way it would leave a logged response. When no redaction data is present — a provider that
-// refused before key selection populated it — a conservative credential-shape scrub still applies,
-// so a quoted key never reaches the dashboard.
+// same way it would leave a logged response. The credential-shape scrub runs after the literal
+// replacements in every case: a message can carry both a seeded literal and a second credential the
+// map never learned about (a key the provider failed over to), so the two are not alternatives.
 func redactProbeError(ctx *schemas.BifrostContext, text string) string {
-	data, ok := schemas.RedactionDataFromContext(ctx)
-	if ok {
+	if data, ok := schemas.RedactionDataFromContext(ctx); ok {
 		if len(data.LiteralReplacements.Input) > 0 {
 			text = schemas.ApplyLiteralReplacements(text, data.LiteralReplacements.Input)
 		}
 		if len(data.ReversibleMappings.Output) > 0 {
 			text = schemas.ApplyLiteralReplacements(text, data.ReversibleMappings.Output)
 		}
-		return text
 	}
-	return probeCredentialPattern.ReplaceAllString(text, "[REDACTED]")
+	return probeCredentialPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if !probeMixedAlnumPattern.MatchString(match) {
+			return match
+		}
+		return "[REDACTED]"
+	})
 }

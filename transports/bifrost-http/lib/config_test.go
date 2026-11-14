@@ -27212,6 +27212,19 @@ func TestListedModelsFromConfigFile(t *testing.T) {
 		require.NoError(t, err)
 		return vk.ListedModels
 	}
+	// inMemoryListed reads the copy the governance permits are built from, which is what the gate
+	// answers with after a reload.
+	inMemoryListed := func(t *testing.T, config *Config) []tables.TableListedModelEntry {
+		t.Helper()
+		require.NotNil(t, config.GovernanceConfig)
+		for i := range config.GovernanceConfig.VirtualKeys {
+			if config.GovernanceConfig.VirtualKeys[i].ID == "vk-listed" {
+				return config.GovernanceConfig.VirtualKeys[i].ListedModels
+			}
+		}
+		t.Fatal("the loaded config carries no in-memory copy of vk-listed")
+		return nil
+	}
 
 	t.Run("model and rule entries are stored as written", func(t *testing.T) {
 		config, _ := load(t, t.TempDir(), `[{"provider": "openai", "model": "gpt-5.4"}, {"routing_rule": "coding"}]`)
@@ -27295,6 +27308,27 @@ func TestListedModelsFromConfigFile(t *testing.T) {
 		listed := storedListed(t, config)
 		require.NotNil(t, listed, "dropping the last entry must not turn the block off")
 		assert.Empty(t, listed)
+	})
+
+	// A block set through the API, then a file that does not mention the field: the file does not
+	// express the block, so the stored one survives - in the row and in the in-memory permit that
+	// decides access. Reading the omission as a clear would switch the gate off in memory while the
+	// dashboard still shows the block, and the reverse of what "nil means the caller did not set it"
+	// means everywhere else.
+	t.Run("an omitted block keeps the block stored through the API", func(t *testing.T) {
+		dir := t.TempDir()
+		config, _ := load(t, dir, `[{"provider": "openai", "model": "gpt-5.4"}]`)
+		stored := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-listed")
+		require.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, stored.ListedModels)
+		config.Close(context.Background())
+
+		config, _ = load(t, dir, "")
+		defer config.Close(context.Background())
+		assert.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, storedListed(t, config),
+			"an omitted field is not a clear; the stored block has to survive the reload")
+		inMemory := inMemoryListed(t, config)
+		require.NotNil(t, inMemory, "the in-memory copy the gate reads must keep the block the row holds")
+		assert.Equal(t, []tables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}, inMemory)
 	})
 }
 

@@ -5838,6 +5838,20 @@ func TestCreateVirtualKeyListedModelsValidation(t *testing.T) {
 		want string
 	}{
 		{
+			// The cap is what keeps a block readable in the dashboard and bounded in the permit it
+			// builds. It is enforced here as well as in the table validator so the API answers 400 with
+			// the count, and nothing is persisted.
+			name: "more than the entry cap",
+			body: func() string {
+				entries := make([]string, 0, configstoreTables.MaxVirtualKeyListedModelsEntries+1)
+				for i := 0; i <= configstoreTables.MaxVirtualKeyListedModelsEntries; i++ {
+					entries = append(entries, fmt.Sprintf(`{"provider":"openai","model":"gpt-5-%d"}`, i))
+				}
+				return `{"name":"vk-cap","provider_configs":[{"provider":"openai","allowed_models":["*"]}],"listed_models":[` + strings.Join(entries, ",") + `]}`
+			}(),
+			want: "at most 100 entries",
+		},
+		{
 			name: "a model outside allowed_models",
 			body: `{"name":"vk-a","provider_configs":[{"provider":"openai","allowed_models":["gpt-5.4"]}],"listed_models":[{"provider":"openai","model":"gpt-4o"}]}`,
 			want: "allowed_models of provider openai does not allow",

@@ -3,8 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { ModelTestButton } from "./modelTestButton";
 
+// The probe's in-flight state is the only thing the mock varies: hoisted so both the factory and a
+// test can reach it, since vi.mock is lifted above the imports.
+const probeState = vi.hoisted(() => ({ loading: false }));
+
 vi.mock("@/lib/store/apis/providersApi", () => ({
-	useTestModelMutation: () => [vi.fn(), { isLoading: false }],
+	useTestModelMutation: () => [vi.fn(), { isLoading: probeState.loading }],
 }));
 
 beforeAll(async () => {
@@ -33,4 +37,14 @@ describe("ModelTestButton", () => {
 
 		expect(html).not.toContain('disabled=""');
 	});
+});
+
+// A probe in flight must be disabled: the button is the only entry point, and a second click while
+// the first is unanswered would spend a second probe.
+it("is disabled while its probe is unanswered", () => {
+	probeState.loading = true;
+	const html = renderToStaticMarkup(<ModelTestButton provider="openai" model="gpt-4o-mini" mode="chat" />);
+	probeState.loading = false;
+
+	expect(html).toContain('disabled=""');
 });

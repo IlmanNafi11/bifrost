@@ -94,18 +94,67 @@ func probeCatalog(tb testing.TB, rows map[string]string) *modelcatalog.ModelCata
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
 
+// probeTraceRecorder counts the traces a probe opens and completes, which is what makes the probe's
+// invisibility safe: a trace nobody completes sits in the store until the TTL sweep warns about it.
+type probeTraceRecorder struct {
+	*schemas.NoOpTracer
+	mu        sync.Mutex
+	created   int
+	completed []string
+	attrs     map[string]any
+}
+
+func (r *probeTraceRecorder) CreateTrace(_ string, _ ...string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.created++
+	return "probe-trace-" + fmt.Sprint(r.created)
+}
+
+func (r *probeTraceRecorder) CompleteAndFlushTrace(traceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.completed = append(r.completed, traceID)
+}
+
+func (r *probeTraceRecorder) SetTraceAttribute(traceID string, key string, value any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.attrs == nil {
+		r.attrs = map[string]any{}
+	}
+	r.attrs[traceID+"|"+key] = value
+}
+
+// completedCount and createdCount are read under the lock so a stream that ends on its own
+// goroutine cannot race the assertion.
+func (r *probeTraceRecorder) completedCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.completed)
+}
+
 // newProbeHandler wires a provider handler over a real Bifrost client whose OpenAI
 // provider points at upstream, plus an observer plugin that records the probe
 // markers every hook saw.
 func newProbeHandler(tb testing.TB, upstreamURL string, catalog *modelcatalog.ModelCatalog) (*ProviderHandler, *probeObserved) {
 	tb.Helper()
-	return newProbeHandlerWithProvider(tb, schemas.OpenAI, upstreamURL, catalog, nil)
+	h, observed, _ := newProbeHandlerTracing(tb, schemas.OpenAI, upstreamURL, catalog, nil)
+	return h, observed
 }
 
 // newProbeHandlerWithProvider is newProbeHandler with the provider name and custom
 // provider config under test, for modes a built-in provider only serves through a
 // custom (OpenAI-compatible) configuration.
 func newProbeHandlerWithProvider(tb testing.TB, providerName schemas.ModelProvider, upstreamURL string, catalog *modelcatalog.ModelCatalog, custom *schemas.CustomProviderConfig) (*ProviderHandler, *probeObserved) {
+	tb.Helper()
+	h, observed, _ := newProbeHandlerTracing(tb, providerName, upstreamURL, catalog, custom)
+	return h, observed
+}
+
+// newProbeHandlerTracing is the fixture with the tracer it handed the client, so a test can assert
+// the probe completed the trace it opened.
+func newProbeHandlerTracing(tb testing.TB, providerName schemas.ModelProvider, upstreamURL string, catalog *modelcatalog.ModelCatalog, custom *schemas.CustomProviderConfig) (*ProviderHandler, *probeObserved, *probeTraceRecorder) {
 	tb.Helper()
 	log := bifrost.NewNoOpLogger()
 	SetLogger(log)
@@ -122,16 +171,18 @@ func newProbeHandlerWithProvider(tb testing.TB, providerName schemas.ModelProvid
 		},
 	}
 	observer := &probeObserved{}
+	tracer := &probeTraceRecorder{}
 	client, err := bifrost.Init(tb.Context(), schemas.BifrostConfig{
 		Account:      lib.NewBaseAccount(config),
 		Logger:       log,
 		ModelCatalog: catalog,
 		LLMPlugins:   []schemas.LLMPlugin{observer},
+		Tracer:       tracer,
 	})
 	require.NoError(tb, err)
 	tb.Cleanup(client.Shutdown)
 	config.SetBifrostClient(client)
-	return NewProviderHandler(nil, config, client), observer
+	return NewProviderHandler(nil, config, client), observer, tracer
 }
 
 // chatUpstream streams one content chunk and a terminal frame.
@@ -280,6 +331,75 @@ func TestModelProbe_TimeoutIsReportedAsAVerdict(t *testing.T) {
 	assert.Regexp(t, `^probe timed out after 300`, response.Error, "a deadline is reported as a timeout verdict, not the raw context error")
 	assert.True(t, response.TimedOut, "the verdict names the timeout structurally, not only in prose")
 	assert.Nil(t, response.TTFTMs, "a timeout reports no first-token time")
+}
+
+// The deadline an operator reads is the one that applied: a handler built with a shortened timeout
+// must name that value, not the handler's zero field. (The default-timeout path resolves to the same
+// field before the verdict, so this covers both.)
+func TestModelProbe_TimeoutVerdictNamesTheDeadlineThatApplied(t *testing.T) {
+	makeHandler := func(t *testing.T, configured time.Duration) *ProviderHandler {
+		t.Helper()
+		upstream := chatUpstream(t, 0, nil)
+		upstream.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		})
+		t.Cleanup(upstream.Close)
+		h, _ := newProbeHandler(t, upstream.URL, probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"}))
+		h.probeTimeout = configured
+		return h
+	}
+
+	shortened := makeHandler(t, 300*time.Millisecond)
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	shortened.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	response := decodeProbe(t, ctx)
+	require.True(t, response.TimedOut)
+	assert.Contains(t, response.Error, "probe timed out after 300ms",
+		"the verdict names the deadline the probe ran under, not the handler's zero value")
+	assert.NotContains(t, response.Error, "after 0s")
+}
+
+// The timeout verdict distinguishes the probe's own deadline from a provider failure that happens to
+// mention one. Getting this wrong reports a provider outage as "your probe timed out" and a timeout as
+// a provider error, so every arm is pinned here.
+func TestModelProbe_TimeoutDetectionSeparatesOurDeadlineFromProviderText(t *testing.T) {
+	live := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	expired := func(t *testing.T) *schemas.BifrostContext {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		time.Sleep(5 * time.Millisecond)
+		return ctx
+	}
+
+	t.Run("a nil error under an expired context is a timeout", func(t *testing.T) {
+		assert.True(t, isProbeTimeout(expired(t), nil))
+	})
+	t.Run("a nil error with time to spare is not", func(t *testing.T) {
+		assert.False(t, isProbeTimeout(live(), nil))
+	})
+	t.Run("the drain's cancellation chains the deadline", func(t *testing.T) {
+		assert.True(t, isProbeTimeout(expired(t), &schemas.BifrostError{Error: &schemas.ErrorField{
+			Message: context.DeadlineExceeded.Error(), Error: context.DeadlineExceeded,
+		}}))
+	})
+	t.Run("a provider that echoes the phrase while our deadline is intact is a provider failure", func(t *testing.T) {
+		assert.False(t, isProbeTimeout(live(), &schemas.BifrostError{Error: &schemas.ErrorField{
+			Message: "upstream said: context deadline exceeded",
+		}}), "the provider's own timeout is not ours to report as a probe timeout")
+	})
+	t.Run("an ordinary provider error is not a timeout", func(t *testing.T) {
+		assert.False(t, isProbeTimeout(live(), &schemas.BifrostError{Error: &schemas.ErrorField{Message: "invalid api key"}}))
+		assert.False(t, isProbeTimeout(expired(t), &schemas.BifrostError{Error: &schemas.ErrorField{Message: "invalid api key"}}),
+			"an expired context does not turn a provider refusal into a timeout")
+	})
 }
 
 func TestModelProbe_RejectsIncompletePayloadAndUnknownMode(t *testing.T) {
@@ -745,11 +865,19 @@ func TestModelProbe_AdmissionCapsConcurrency(t *testing.T) {
 
 // A provider that refuses before key selection can still echo a credential into a verdict with no
 // redaction data present. The shape scrub is the last line of defence so the dashboard never sees it.
+//
+// The long-run arm is narrowed by shape, and both sides are pinned: an unbroken run of one letter is
+// a word, a hyphenated name or a model id, and redacting those would mangle a provider's message
+// without hiding anything. A run carrying digits or mixed case is the credential shape.
 func TestRedactProbeError_ScrubsCredentialShapeWithoutRedactionData(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	got := redactProbeError(ctx, "Incorrect API key provided: sk-1234567890abcdef")
-	assert.Equal(t, "Incorrect API key provided: [REDACTED]", got)
-	assert.Equal(t, "bad key [REDACTED]", redactProbeError(ctx, "bad key "+strings.Repeat("a", 40)))
+	assert.Equal(t, "Incorrect API key provided: [REDACTED]",
+		redactProbeError(ctx, "Incorrect API key provided: sk-1234567890abcdef"))
+	assert.Equal(t, "bad key [REDACTED]",
+		redactProbeError(ctx, "bad key "+strings.Repeat("a", 40)+"9"), "a base64-shaped run is a credential")
+	assert.Equal(t, "bad key "+strings.Repeat("a", 40),
+		redactProbeError(ctx, "bad key "+strings.Repeat("a", 40)),
+		"an unbroken run of one letter is a word, not a credential")
 	assert.Equal(t, "plain provider refusal", redactProbeError(ctx, "plain provider refusal"),
 		"non-credential text passes through unchanged")
 }
@@ -782,4 +910,99 @@ func TestModelProbe_AutoSelectSecretIsScrubbedFromTheVerdict(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 
 	assert.NotContains(t, string(ctx.Response.Body()), secret, "the auto-selected key's echo must not reach the caller")
+}
+
+// A probe runs through core like any other request, so core opens a trace for it. The management
+// API carries no tracing middleware and the logging plugin skips probes, so if the handler does not
+// finish that trace it sits in the store until the TTL sweep exports it as a completion that never
+// arrived. Completing it is also what hands the probe marker to the observability connectors, which
+// is how they keep the probe out of provider statistics.
+func TestModelProbe_CompletesTheTraceItOpens(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _, tracer := newProbeHandlerTracing(t, schemas.OpenAI, chatUpstream(t, 0, nil).URL, catalog, nil)
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.True(t, decodeProbe(t, ctx).OK)
+
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	require.Equal(t, 1, tracer.created, "the probe opens exactly one trace")
+	require.Equal(t, []string{"probe-trace-1"}, tracer.completed,
+		"the probe must complete the trace it opened, or it expires as a completion that never arrived")
+	assert.Equal(t, true, tracer.attrs["probe-trace-1|"+schemas.TraceAttrIsModelProbe],
+		"the completed trace carries the probe marker the connectors read")
+}
+
+// auditLineLogger records the lines the probe audit sink emits. The probe writes exactly one audit
+// record and nothing else - no log row, no metric, no cost - so this line is what an operator's
+// log pipeline sees of a probe at all, and it must carry the verdict and the principal.
+type auditLineLogger struct {
+	mockLogger
+	lines []string
+}
+
+func (l *auditLineLogger) Info(format string, args ...any) {
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func TestModelProbe_WritesOneAuditLineWithTheVerdict(t *testing.T) {
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _, _ := newProbeHandlerTracing(t, schemas.OpenAI, chatUpstream(t, 0, nil).URL, catalog, nil)
+	recorder := &auditLineLogger{}
+	SetLogger(recorder)
+	t.Cleanup(func() { SetLogger(bifrost.NewNoOpLogger()) })
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var probeLines []string
+	for _, line := range recorder.lines {
+		if strings.HasPrefix(line, "bifrost.probe ") {
+			probeLines = append(probeLines, line)
+		}
+	}
+	require.Len(t, probeLines, 1, "a probe leaves exactly one audit record, and no other log line")
+
+	var event probeAuditEvent
+	require.NoError(t, sonic.Unmarshal([]byte(strings.TrimPrefix(probeLines[0], "bifrost.probe ")), &event))
+	assert.Equal(t, "openai", event.Provider)
+	assert.Equal(t, "gpt-4o-mini", event.Model)
+	assert.Equal(t, "chat", event.Mode)
+	assert.True(t, event.OK, "the record carries the verdict the caller was shown")
+	assert.NotEmpty(t, event.Principal, "the record names who spent the probe")
+}
+
+// A provider that sends output and then fails mid-stream is a dead model. The verdict has to come
+// from draining the stream to its end: stopping at the first chunk (which is all the TTFT needs)
+// would report ok:true for a model that answered once and then broke, and clear the TTFT of a probe
+// that produced no usable answer.
+func TestModelProbe_ErrorAfterFirstChunkIsNotASuccess(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o-mini\","+
+			"\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "data: {\"error\":{\"message\":\"upstream fell over\",\"type\":\"server_error\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	t.Cleanup(upstream.Close)
+
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _ := newProbeHandler(t, upstream.URL, catalog)
+
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	response := decodeProbe(t, ctx)
+	assert.False(t, response.OK, "a stream that failed after its first chunk is not a live model")
+	assert.Nil(t, response.TTFTMs, "a failed probe reports no time to first token")
+	assert.NotEmpty(t, response.Error, "the provider's failure is the verdict's explanation")
+	assert.GreaterOrEqual(t, response.TotalMs, int64(0), "the measurement is still reported")
 }

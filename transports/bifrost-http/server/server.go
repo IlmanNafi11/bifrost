@@ -1514,6 +1514,12 @@ func (s *BifrostHTTPServer) ReloadRoutingRule(ctx context.Context, id string) er
 // governance's definition cache. A deleted rule must stop opening models for a key that listed it,
 // which is what removing it from governance's cache settles on the next request.
 func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) error {
+	// Governance's cache is dropped first and unconditionally. Its entry decides whether a virtual
+	// key's listed_models block may open the rule's targets, so a rule deleted from the database must
+	// stop opening them even when the routing plugin is missing or its own delete fails - the caller
+	// already treats that as non-fatal, and a stale entry here is a fail-open authorization answer
+	// that would last until the next restart.
+	s.removeGovernanceRoutingRule(id)
 	routingPlugin, err := s.getRoutingPlugin()
 	if err != nil {
 		return fmt.Errorf("routing plugin not found: %w", err)
@@ -1521,13 +1527,18 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	if err := routingPlugin.GetRuleStore().DeleteRule(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete routing rule from rule store: %w", err)
 	}
-	s.removeGovernanceRoutingRule(id)
 	return nil
 }
 
 // reloadGovernanceRoutingRule refreshes one rule in governance's listed_models definition cache.
 // A deployment without the governance plugin loaded has no cache to refresh, which is a warning
 // rather than a failure: the routing reload the caller asked for already succeeded.
+//
+// A refresh that fails drops the cached definition instead of keeping it. The cache answers "may
+// this key's listing open the rule's targets", and the row on disk has just changed in a way this
+// process could not read; the previous definition is then the one the operator edited away from, so
+// keeping it would answer the authorization question from a rule that no longer exists as written.
+// Dropping it refuses that rule until the next successful reload, which is the fail-closed side.
 func (s *BifrostHTTPServer) reloadGovernanceRoutingRule(ctx context.Context, id string) {
 	plugin, err := s.getGovernancePlugin()
 	if err != nil {
@@ -1539,7 +1550,8 @@ func (s *BifrostHTTPServer) reloadGovernanceRoutingRule(ctx context.Context, id 
 		return
 	}
 	if err := store.RoutingRules().Reload(ctx, id); err != nil {
-		logger.Warn("failed to refresh routing rule %s in the governance listing cache: %v", id, err)
+		logger.Warn("failed to refresh routing rule %s in the governance listing cache, dropping it: %v", id, err)
+		store.RoutingRules().Remove(id)
 	}
 }
 

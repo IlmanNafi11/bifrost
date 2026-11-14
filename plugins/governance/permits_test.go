@@ -1346,6 +1346,65 @@ func TestMandatoryAuthAcceptsAnAuthenticatedIdentity(t *testing.T) {
 	})
 }
 
+// A model probe is started by an authenticated local admin from the dashboard, with no virtual key,
+// and spends the deployment's own credentials. On a deployment that mandates virtual keys it must
+// still run, or the Test button refuses every model: the probe endpoint's own admin gate is the
+// admission question that applies to it. A probe that does present a credential is not exempt from
+// the rest of the funnel, so a dead key is still refused.
+func TestMandatoryAuthLetsAProbeThrough(t *testing.T) {
+	vk := buildVKForMCPStamping([]string{"read_file"})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, &mockInMemoryStore{})
+	require.NoError(t, err)
+
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(true)},
+		logger, local, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	evaluate := func(t *testing.T, probe bool) *schemas.BifrostError {
+		t.Helper()
+		ctx := emptyCtx()
+		if probe {
+			ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+			ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+		}
+		_, bifrostErr := plugin.Evaluate(ctx, &EvaluationRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.OpenAI,
+			Model:       "gpt-4o-mini",
+		})
+		return bifrostErr
+	}
+
+	t.Run("a probe with no key is admitted", func(t *testing.T) {
+		require.Nil(t, evaluate(t, true),
+			"mandatory virtual keys must not close the admin probe, which deliberately carries none")
+	})
+
+	t.Run("an ordinary request with no key is still refused", func(t *testing.T) {
+		bifrostErr := evaluate(t, false)
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, 401, *bifrostErr.StatusCode)
+	})
+
+	t.Run("a probe presenting a dead key is still refused", func(t *testing.T) {
+		ctx := presentCtx("sk-bf-dead")
+		ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+		_, bifrostErr := plugin.Evaluate(ctx, &EvaluationRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			Provider:    schemas.OpenAI,
+			Model:       "gpt-4o-mini",
+		})
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.Type)
+		assert.Equal(t, string(DecisionAccessNotFound), *bifrostErr.Type)
+	})
+}
+
 // A signed-in user nothing grants access to is refused as access not found - unless the caller asked
 // for such a user to be admitted, which Warp does: reaching its chat route already proves the user's
 // role allows it, and on a deployment without access profiles no user ever holds a permit. Admitted
@@ -1831,6 +1890,57 @@ func TestFilterModelsForAccess_ListedModels(t *testing.T) {
 	assert.NotContains(t, ids, "deepseek/deepseek-v4-flash")
 }
 
+// The provider paginates before governance sees the response, so the page a caller gets may hold
+// none of the models its block names. The block is the whole answer: a listed model that this page
+// did not carry is still listed, and one this page did carry keeps the provider's metadata. Showing
+// only what the page happened to hold is the regression that empties page 1 under a live cursor,
+// which an OpenAI-compatible client reads as "this key has no models".
+func TestFilterModelsForAccess_ListedModelsIgnoresThePageBoundary(t *testing.T) {
+	vk := buildVirtualKey("vk-page-less", "sk-bf-page-less", "Page-less Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{
+		{Provider: "openai", Model: "gpt-5.4"},
+		{Provider: "openai", Model: "gpt-4o"},
+	}
+	logger := NewMockLogger()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	ctx := presentCtx("sk-bf-page-less")
+	access, err := plugin.ResolveAccess(ctx)
+	require.NoError(t, err)
+
+	// This page holds neither listed model, and holds models the block does not name.
+	page := []schemas.Model{{ID: "openai/gpt-4o-mini"}, {ID: "openai/o3"}}
+	assert.Equal(t, []string{"openai/gpt-5.4", "openai/gpt-4o"},
+		modelIDs(plugin.filterModelsForAccess(ctx, access, page)),
+		"the block is listed whole whatever the provider's page carried")
+
+	// A listed model the page does carry keeps the metadata the provider reported for it.
+	named := schemas.Model{ID: "openai/gpt-5.4"}
+	named.Name = bifrost.Ptr("GPT-5.4")
+	fromPage := plugin.filterModelsForAccess(ctx, access, []schemas.Model{named})
+	require.Len(t, fromPage, 2)
+	assert.Equal(t, "GPT-5.4", derefString(fromPage[0].Name), "a listed model on the page keeps its provider metadata")
+	assert.Nil(t, fromPage[1].Name, "a listed model the page did not carry is listed as a bare id")
+}
+
+// modelIDs is the listing as the client sees it.
+func modelIDs(models []schemas.Model) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
+}
+
 // Two block shapes that both mean "narrower than the catalog", and both have to keep their meaning
 // on the listing the caller reads: an empty block shows nothing rather than falling back to the
 // catalog, and a block of rules alone shows the rules and no models.
@@ -1936,5 +2046,22 @@ func TestPostLLMHook_ListedModelsDropsTheProviderPageToken(t *testing.T) {
 		out := post(t, build(t, nil), listing())
 		assert.Equal(t, "provider-cursor", out.ListModelsResponse.NextPageToken,
 			"without a block the page is the provider's own, so its cursor still means something")
+	})
+
+	// A credential that resolved to nothing is refused as a key, so it lists nothing - but it still
+	// reaches the post-hook, and the listing branch admits it by construction (the presented arm of
+	// the condition). It must come back as an empty listing, not as a nil-access dereference.
+	t.Run("a presented credential with no access lists nothing", func(t *testing.T) {
+		plugin := build(t, nil)
+		ctx := presentCtx("sk-bf-nothing")
+		out, bifrostErr, err := plugin.PostLLMHook(ctx, listing(), nil)
+		require.NoError(t, err)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, out)
+		require.NotNil(t, out.ListModelsResponse)
+		assert.Empty(t, out.ListModelsResponse.Data)
+		assert.Equal(t, "provider-cursor", out.ListModelsResponse.NextPageToken,
+			"nothing was admitted, so nothing was withheld from the provider's page")
+		plugin.wg.Wait()
 	})
 }

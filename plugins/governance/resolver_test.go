@@ -1053,6 +1053,21 @@ func TestPreLLMHookListedModelsEveryRoute(t *testing.T) {
 			Provider: schemas.OpenAI,
 			Requests: []schemas.BatchRequestItem{{CustomID: "a", Params: map[string]any{"model": loader, "messages": []any{}}}},
 		}}, listed},
+		{"embedding", &schemas.BifrostRequest{RequestType: schemas.EmbeddingRequest, EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
+			Provider: schemas.OpenAI, Model: loader,
+		}}, loader},
+		{"rerank", &schemas.BifrostRequest{RequestType: schemas.RerankRequest, RerankRequest: &schemas.BifrostRerankRequest{
+			Provider: schemas.OpenAI, Model: loader, Query: "q", Documents: []schemas.RerankDocument{{Text: "d"}},
+		}}, loader},
+		{"speech", &schemas.BifrostRequest{RequestType: schemas.SpeechRequest, SpeechRequest: &schemas.BifrostSpeechRequest{
+			Provider: schemas.OpenAI, Model: loader, Input: &schemas.SpeechInput{Input: "hi"},
+		}}, loader},
+		{"image generation", &schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.OpenAI, Model: loader, Input: &schemas.ImageGenerationInput{Prompt: "a red box"},
+		}}, loader},
+		{"video generation", &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.OpenAI, Model: loader, Input: &schemas.VideoGenerationInput{Prompt: "a red box"},
+		}}, loader},
 	}
 	for _, route := range routes {
 		t.Run(route.name+": a model outside the key's listing is refused", func(t *testing.T) {
@@ -1794,6 +1809,38 @@ func TestPreLLMHookListedModels_RefusalAllowsTheChainToReEngage(t *testing.T) {
 // answers for its own model, not the one the caller sent on the request. Reading the stamped
 // request name there would let one listed model launder an unlisted one, since the request's own
 // pass is the only one that may open a routing rule.
+// The rule exception is narrower than the provider gate, not wider. A key that lists a rule whose
+// target sits on a provider the key does not configure must still be refused: a refactor that moved
+// the rule check above the provider check would hand a key its provider's models indirectly, and this
+// is the only case that would notice.
+func TestBudgetResolver_EvaluateRequest_ListedRuleDoesNotOpenAnUnconfiguredProvider(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-openai-only", "sk-bf-openai-only", "OpenAI Only Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"*"}),
+	}
+	// The rule reaches deepseek, which this key does not configure; only the rule is listed.
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}}
+	gov := &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RoutingRules: []configstoreTables.TableRoutingRule{{
+			ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+			CelExpression: "true",
+			Targets: []configstoreTables.TableRoutingTarget{{
+				Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1,
+			}},
+		}},
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, gov, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-openai-only")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+	result := evaluateVirtualKey(resolver, ctx, "sk-bf-openai-only", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionProviderBlocked, result)
+}
+
 func TestBudgetResolver_EvaluateRequest_ListedModelsGatesTheNestedModel(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk-listed", "sk-bf-listed", "Listed Key", true)

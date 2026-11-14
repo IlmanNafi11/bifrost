@@ -1029,13 +1029,34 @@ test.describe("Routing Rules", () => {
 
       const targetTest = routingRulesPage.getTestButton("target");
       await expect(targetTest).toBeVisible();
+
+      // A probe in flight disables its own button: a second click would spend a second probe. The
+      // answer is held until the assertion has run, then released so the toast can be checked. This
+      // handler is registered after the stub above, so it runs first and holds that stub's answer.
+      // Executor form, not Promise.withResolvers: this project's lib target predates es2024.
+      let releaseProbe: () => void = () => {};
+      const probeHeld = new Promise<void>((resolve) => {
+        releaseProbe = resolve;
+      });
+      await page.route(
+        "**/api/models/test",
+        async (route) => {
+          await probeHeld;
+          await route.fallback();
+        },
+        { times: 1 },
+      );
+
       await targetTest.click();
+      await expect(targetTest).toBeDisabled();
+      releaseProbe();
 
       const toast = routingRulesPage.getToast("success");
       await expect(toast).toBeVisible();
       await expect(toast).toContainText("gpt-4o-mini");
       await expect(toast).toContainText("TTFT 120 ms");
       await expect(toast).toContainText("total 340 ms");
+      await expect(targetTest).toBeEnabled();
       // A probe writes no log, cost or stats entry, so the sheet must not be disturbed by it.
       await expect(routingRulesPage.sheet).toBeVisible();
     });

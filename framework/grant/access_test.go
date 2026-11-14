@@ -1894,6 +1894,15 @@ func TestAccess_ListedRulesComposes(t *testing.T) {
 	// exactly as a scope that restricts nothing leaves the base's model listing intact.
 	unrestrictedScope := NewAccess(held(base), listedPermit("other", "o1", "openai", nil, nil), Intersect, nil)
 	assert.Equal(t, []string{"coding", "cheap"}, unrestrictedScope.ListedRules())
+
+	// Present but empty is the other answer: the permit says "no rules", so under Intersect nothing
+	// survives, and under Union only the other side's rules do. A fold that treated [] like nil would
+	// let an owner who listed no rule still reach every rule a broader permit names.
+	emptyRules := listedPermit(PermitVirtualKey, "vk1", "openai", nil, []string{})
+	emptyIntersect := NewAccess(held(emptyRules), scoping, Intersect, nil)
+	assert.Empty(t, emptyIntersect.ListedRules(), "an empty rule list intersects to nothing")
+	emptyUnion := NewAccess(held(emptyRules), scoping, Union, nil)
+	assert.Equal(t, []string{"cheap", "global"}, emptyUnion.ListedRules(), "an empty rule list adds nothing to a union")
 }
 
 // With no model name there is nothing to look up in a listing, so the answer is the model-permission

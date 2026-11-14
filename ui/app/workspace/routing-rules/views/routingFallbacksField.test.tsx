@@ -100,6 +100,9 @@ describe("RoutingFallbacksField", () => {
 		});
 
 		expect(html).toContain('aria-label="Test openai/gpt-4o-mini"');
-		expect(html.match(/data-testid="model-test-button"/g) ?? []).toHaveLength(1);
+		// The button is addressable by the row it belongs to, so a surface outside the component
+		// can target one row's probe without scanning the whole field.
+		expect(html).toContain('data-testid="routing-fallback-0-model-test"');
+		expect(html.match(/data-testid="routing-fallback-\d+-model-test"/g) ?? []).toHaveLength(1);
 	});
 });

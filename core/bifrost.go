@@ -5697,7 +5697,14 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 	// The realtime callback carries each turn's model, with no routing rewrite before these hooks, so
 	// the name it names is the one governance must gate on. Stamped here because this pipeline has no
 	// request path to stamp it: without one the listing gate has no requested name to ask about.
-	stampRequestedRoute(ctx, schemas.Route{Provider: provider, Model: model})
+	//
+	// A continuation turn inherits turn 1's route and must not overwrite it, for the same reason
+	// RunStreamPreHooks skips the stamp there: the agent served the first turn under a model
+	// governance already admitted, and this turn's model is what that admission resolved to. Stamping
+	// it would make the listing gate ask about a name the caller never asked for.
+	if agentContinuationRoute(ctx) == nil {
+		stampRequestedRoute(ctx, schemas.Route{Provider: provider, Model: model})
+	}
 
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {

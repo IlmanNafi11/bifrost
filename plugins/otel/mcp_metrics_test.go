@@ -324,3 +324,99 @@ func TestReplicaIDLabelCannotCollideWithTheConvertedResourceAttribute(t *testing
 		t.Error("service.name missing from the resource")
 	}
 }
+
+// A probe is hidden from provider statistics, and this connector owns the metric exporter that
+// carries them. The marker travels on the finished trace (the probe context is gone by then), so the
+// gate lives in Inject; this drives Inject with two otherwise identical traces and reads the same
+// manual reader the other metric tests use.
+func TestInjectRecordsNoMetricsForAModelProbe(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	exporter := &MetricsExporter{provider: provider, meter: provider.Meter("test")}
+	exporter.initMetrics()
+
+	now := time.Now()
+	build := func(probe bool) *schemas.Trace {
+		// The recorder labels provider series off an llm.call span, so the fixture carries one. Only
+		// the marker differs between the two traces.
+		attempt := &schemas.Span{
+			SpanID: "s1", Name: "chat", Kind: schemas.SpanKindLLMCall,
+			StartTime: now, EndTime: now.Add(time.Second), Status: schemas.SpanStatusOk,
+			Attributes: map[string]any{
+				schemas.AttrProviderName: "openai",
+				schemas.AttrRequestModel: "gpt-4o-mini",
+			},
+		}
+		trace := &schemas.Trace{
+			TraceID:    "t1",
+			RootSpan:   &schemas.Span{SpanID: "root", Name: "request", Kind: schemas.SpanKindLLMCall, StartTime: now, EndTime: now.Add(time.Second)},
+			Spans:      []*schemas.Span{attempt},
+			Attributes: map[string]any{},
+		}
+		if probe {
+			trace.Attributes[schemas.TraceAttrIsModelProbe] = true
+		}
+		return trace
+	}
+
+	p := &OtelPlugin{targets: []*otelTarget{{serviceName: "s", url: "test://probe", traceType: TraceTypeGenAIExtension, metricsExporter: exporter}}}
+	if err := p.Inject(context.Background(), build(true)); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	var probeProbes metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &probeProbes); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, rm := range probeProbes.ScopeMetrics {
+		for _, m := range rm.Metrics {
+			if m.Name == "" {
+				continue
+			}
+			if n := metricSamples(m); n > 0 {
+				t.Errorf("a probe recorded %d samples into %q; it must stay out of provider statistics", n, m.Name)
+			}
+		}
+	}
+
+	// Control: the same trace without the marker is ordinary traffic and does move a series.
+	if err := p.Inject(context.Background(), build(false)); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	var ordinary metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &ordinary); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	total := 0
+	for _, rm := range ordinary.ScopeMetrics {
+		for _, m := range rm.Metrics {
+			total += metricSamples(m)
+		}
+	}
+	if total == 0 {
+		t.Fatal("an ordinary trace recorded no metric samples, so the probe assertion above proves nothing")
+	}
+}
+
+// metricSamples counts the data points a metric carries, whichever instrument produced it.
+func metricSamples(m metricdata.Metrics) int {
+	switch data := m.Data.(type) {
+	case metricdata.Sum[int64]:
+		return len(data.DataPoints)
+	case metricdata.Sum[float64]:
+		return len(data.DataPoints)
+	case metricdata.Gauge[int64]:
+		return len(data.DataPoints)
+	case metricdata.Gauge[float64]:
+		return len(data.DataPoints)
+	case metricdata.Histogram[int64]:
+		return len(data.DataPoints)
+	case metricdata.Histogram[float64]:
+		return len(data.DataPoints)
+	case metricdata.ExponentialHistogram[int64]:
+		return len(data.DataPoints)
+	case metricdata.ExponentialHistogram[float64]:
+		return len(data.DataPoints)
+	default:
+		return 0
+	}
+}

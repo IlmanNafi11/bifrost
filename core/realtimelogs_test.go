@@ -108,3 +108,46 @@ func TestRealtimeTurnPluginLogsSurviveContextHandoff(t *testing.T) {
 		}
 	}
 }
+
+// A realtime turn that continues an agent loop inherits the route the first turn was served under;
+// stamping this turn's model would make the listing gate ask about a name the caller never sent.
+// The same turn without the continuation stamp is the control: it must record its own name.
+func TestRealtimeTurnKeepsTheContinuationRoute(t *testing.T) {
+	for _, continuation := range []bool{false, true} {
+		t.Run(fmt.Sprintf("continuation=%t", continuation), func(t *testing.T) {
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: NewMockAccount(), Logger: NewNoOpLogger(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if continuation {
+				ctx.SetValue(schemas.BifrostContextKeyMCPAgentServedRoute, &schemas.RoutingInfo{
+					Provider: schemas.OpenAI, Model: "gpt-5.4",
+				})
+			}
+			hooks, preErr := client.RunRealtimeTurnPreHooks(ctx, &schemas.BifrostRequest{
+				RequestType:      schemas.RealtimeRequest,
+				ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "resolved-4o"},
+			})
+			if preErr != nil || hooks == nil {
+				t.Fatalf("admission failed: %v", preErr)
+			}
+			t.Cleanup(hooks.Cleanup)
+
+			provider, model := ctx.Value(schemas.BifrostContextKeyRequestedProvider), ctx.Value(schemas.BifrostContextKeyRequestedModel)
+			if continuation {
+				if model != nil {
+					t.Fatalf("a continuation turn stamped requested model %v; it must inherit turn 1's route", model)
+				}
+				return
+			}
+			if provider != schemas.OpenAI || model != "resolved-4o" {
+				t.Fatalf("a first turn stamped %v/%v, want openai/resolved-4o", provider, model)
+			}
+		})
+	}
+}

@@ -4175,6 +4175,16 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					if configData.Governance.VirtualKeys[i].Metadata == nil {
 						configData.Governance.VirtualKeys[i].Metadata = existingVirtualKey.Metadata
 					}
+					// A key the file describes without a listed_models block keeps the block already
+					// stored, the same pointer rule metadata follows: an omitted field means the file
+					// does not express it, not that it clears it, and UpdateVirtualKey reads it that
+					// way too. Carrying it here is what keeps the in-memory permit in step with the
+					// row, so a block set through the API cannot read as off after a reload while the
+					// dashboard still shows it. An explicit [] in the file is a real value and is
+					// kept as the deny-all it is.
+					if configData.Governance.VirtualKeys[i].ListedModels == nil {
+						configData.Governance.VirtualKeys[i].ListedModels = existingVirtualKey.ListedModels
+					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
@@ -4311,7 +4321,16 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	}
 	configData.Governance.RoutingRules = sanitizedRoutingRules
 
-	// Merge RoutingRules by ID with hash comparison
+	// Merge RoutingRules by ID with hash comparison.
+	//
+	// This runs only from LoadConfig, which Bootstrap calls before LoadPlugins: the routing plugin's
+	// rule store and governance's definition cache are both seeded from the table after this sync has
+	// committed (plugins/routing/rules.NewStore and governance.NewRoutingRuleStore read it at
+	// construction), so a rule added, changed or deleted by the file is already absent from the live
+	// caches. Only the CRUD handlers mutate rules on a running server, and those go through
+	// ReloadRoutingRule/RemoveRoutingRule. There is no config.json reload at runtime - adding one
+	// would have to invalidate both caches here, or a deleted rule would keep opening its targets.
+	// Do not add a reload path without it.
 	routingRulesToAdd := make([]configstoreTables.TableRoutingRule, 0)
 	routingRulesToUpdate := make([]configstoreTables.TableRoutingRule, 0)
 	for i, newRoutingRule := range configData.Governance.RoutingRules {

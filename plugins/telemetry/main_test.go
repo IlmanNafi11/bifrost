@@ -1197,3 +1197,39 @@ func BenchmarkTransportOverheadHooks(b *testing.B) {
 		_ = p.HTTPTransportPostHook(ctx, req, resp)
 	}
 }
+
+// A probe is hidden from provider statistics, and the provider counters are this plugin's to move.
+// Without the guard a probe would land in bifrost_upstream_requests_total and success-rate - the two
+// series the probe spec names - which is the exact signal an operator watches to decide a provider
+// is healthy.
+func TestModelProbeMovesNoProviderSeries(t *testing.T) {
+	p := newTestPlugin(t)
+	t.Cleanup(func() { p.Cleanup() })
+
+	probeCtx := newHookContext(schemas.ChatCompletionRequest)
+	probeCtx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+	if _, _, err := p.PreLLMHook(probeCtx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if _, _, err := p.PostLLMHook(probeCtx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	if got := testutil.CollectAndCount(p.UpstreamRequestsTotal); got != 0 {
+		t.Fatalf("bifrost_upstream_requests_total series = %d after a probe, want 0", got)
+	}
+	if got := activeGauge(p, schemas.ChatCompletionRequest); got != 0 {
+		t.Fatalf("bifrost_active_requests for a probe = %v, want 0: a probe must not hold a slot", got)
+	}
+
+	// Control: the same request without the marker is provider traffic and moves the counter.
+	ordinaryCtx := newHookContext(schemas.ChatCompletionRequest)
+	if _, _, err := p.PreLLMHook(ordinaryCtx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if _, _, err := p.PostLLMHook(ordinaryCtx, overheadResponse(), nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	if got := testutil.CollectAndCount(p.UpstreamRequestsTotal); got == 0 {
+		t.Fatalf("bifrost_upstream_requests_total recorded nothing for an ordinary request")
+	}
+}

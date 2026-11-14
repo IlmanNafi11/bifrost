@@ -271,6 +271,11 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	if req != nil && req.RequestType == schemas.RealtimeRequest {
 		return req, nil, nil
 	}
+	// A model probe is hidden from logs, cost and provider statistics; a generation opens a log
+	// record with a measured latency, which is exactly the traffic a probe is not.
+	if bifrost.IsModelProbe(ctx) {
+		return req, nil, nil
+	}
 
 	var traceID string
 	var traceName string
@@ -569,6 +574,10 @@ func addLatencyTags(logger *logging.Logger, generationID, traceID string, upstre
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Never returns an error as it handles missing IDs gracefully
 func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	// Paired with the pre-hook guard: a probe opened no generation, so there is none to post.
+	if bifrost.IsModelProbe(ctx) {
+		return result, bifrostErr, nil
+	}
 	requestType, _, _, _ := bifrost.GetResponseFields(result, bifrostErr)
 	if requestType == schemas.RealtimeRequest {
 		return result, bifrostErr, nil

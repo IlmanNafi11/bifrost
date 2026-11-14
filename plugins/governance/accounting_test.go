@@ -876,6 +876,75 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 // layer: a probe passes admission (so a model the key may not use is still
 // refused) but charges no cost, token, request or rate-limit allowance, because a
 // health check must not move a budget the operator did not spend.
+// A probe carrying a virtual key that lists the model is admitted by the listing gate and still
+// spends nothing. The two halves are tested apart today - the gate refuses an unlisted probe and the
+// accounting test runs without a key - so a change that let a keyed probe bill, or let the listing
+// gate treat the probe marker as an exemption, would pass both.
+func TestAccounting_ProbeWithAListedKeySpendsNothing(t *testing.T) {
+	logger := NewMockLogger()
+	// Rate-limit counters, not budget cost: cost comes from a pricing table this test does not
+	// configure, so a budget assertion here would read zero whether the probe billed or not.
+	listedKey := func(id, secret string) (*configstoreTables.TableVirtualKey, *configstoreTables.TableRateLimit) {
+		rl := buildRateLimitWithUsage("rl-"+id, 1_000_000, 0, 1_000_000, 0)
+		vk := buildVirtualKeyWithRateLimit(id, secret, "Listed VK "+id, rl)
+		vk.ListedModels = []configstoreTables.TableListedModelEntry{{Provider: "openai", Model: "gpt-5.4"}}
+		return vk, rl
+	}
+	probeKey, probeRL := listedKey("vk-probe-listed", "sk-bf-probe-listed")
+	// The control key exists only to prove this flow reaches accounting at all: without it, a zero
+	// on the probe key would also be consistent with the request dying before billing.
+	controlKey, controlRL := listedKey("vk-control-listed", "sk-bf-control-listed")
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*probeKey, *controlKey},
+		RateLimits:  []configstoreTables.TableRateLimit{*probeRL, *controlRL},
+	}, nil, nil)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	// The response names the model the key is listed for: the listing gate checks the returned model
+	// against the same listing, and a mismatched response is refused before accounting runs.
+	listed := func() *schemas.BifrostResponse {
+		resp := countableResponse()
+		resp.ChatResponse.Model = "gpt-5.4"
+		resp.ChatResponse.ExtraFields.OriginalModelRequested = "gpt-5.4"
+		return resp
+	}
+	run := func(vkSecret string, probe bool) {
+		t.Helper()
+		ctx := resolverCtx(store, vkSecret)
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-5.4")
+		if probe {
+			ctx.SetValue(schemas.BifrostContextKeyIsProbe, true)
+		}
+		req := newChatRequest()
+		req.ChatRequest.Model = "gpt-5.4"
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit, "a listed model is admitted for the key")
+		_, _, err = plugin.PostLLMHook(ctx, listed(), nil)
+		require.NoError(t, err)
+	}
+
+	run("sk-bf-probe-listed", true)
+	run("sk-bf-control-listed", false)
+	settleAccounting(t, plugin)
+
+	data := store.GetGovernanceData(context.Background())
+	control, ok := data.RateLimits["rl-vk-control-listed"]
+	require.True(t, ok, "control: the key's rate limit must be tracked")
+	require.Equal(t, int64(1), control.RequestCurrentUsage,
+		"control: this flow must bill, or the zero below proves nothing about the probe marker")
+	// The probe's counters must still be present: a missing map entry also reads as zero, which would
+	// let a regression pass by removing the limit rather than by not charging it.
+	counted, ok := data.RateLimits["rl-vk-probe-listed"]
+	require.True(t, ok, "the key's rate limit must still be tracked after a probe")
+	assert.Zero(t, counted.RequestCurrentUsage, "a keyed probe must not count as a request")
+	assert.Zero(t, counted.TokenCurrentUsage, "a keyed probe must not consume tokens")
+}
+
 func TestAccounting_ProbeSpendsNothing(t *testing.T) {
 	logger := NewMockLogger()
 	rl := buildRateLimitWithUsage("rl-vk", 1_000_000, 0, 1_000_000, 0)
