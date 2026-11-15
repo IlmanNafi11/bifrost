@@ -554,6 +554,9 @@ type probeAdmission struct {
 	lastStart    time.Time
 	failures     map[schemas.ModelProvider]int
 	blockedUntil map[schemas.ModelProvider]time.Time
+	// blockedFor is the backoff window that produced blockedUntil, named in the refusal so an
+	// operator learns roughly when to retry without the endpoint revealing the exact remainder.
+	blockedFor map[schemas.ModelProvider]time.Duration
 	// inFlight counts probes currently running. allow refuses once probeMaxInFlight is reached,
 	// and release is paired with every allow that admitted.
 	inFlight int
@@ -573,9 +576,14 @@ func (a *probeAdmission) allow(provider schemas.ModelProvider) string {
 	defer a.mu.Unlock()
 	if until, blocked := a.blockedUntil[provider]; blocked {
 		if now.Before(until) {
-			return "a probe against this provider is backing off; wait before probing again"
+			window := a.blockedFor[provider]
+			if window <= 0 {
+				window = probeFailureBackoff
+			}
+			return fmt.Sprintf("a probe against this provider is backing off for about %s; wait before probing again", window)
 		}
 		delete(a.blockedUntil, provider)
+		delete(a.blockedFor, provider)
 	}
 	if wait := probeMinInterval - now.Sub(a.lastStart); wait > 0 {
 		return fmt.Sprintf("a probe was started less than %s ago; wait before starting another", probeMinInterval)
@@ -598,12 +606,14 @@ func (a *probeAdmission) release() {
 	}
 }
 
-// record applies the verdict to the provider's backoff. A probe that reached the provider and was
-// refused for a throttle or an outage pushes the next attempt out; a verdict the caller asked for
-// (a bad model, a bad key) does not, since the operator is iterating on configuration and the loop
-// is already bounded by the per-principal interval.
+// record applies the verdict to the provider's backoff. A provider that refused the call for a
+// throttle or an outage (429/5xx) pushes the next attempt out; a verdict the caller asked for (a
+// bad model, a bad key) does not, since the operator is iterating on configuration and the loop is
+// already bounded by the global interval. A probe timeout is deliberately not a backoff either: a
+// slow provider that outlived the 60s window is re-probeable immediately, because punishing its
+// latency by fencing it for 30s and growing is what turns "slow" into "dead" for the operator.
 func (a *probeAdmission) record(provider schemas.ModelProvider, response *ModelTestResponse, probeErr *schemas.BifrostError) {
-	throttled := isProviderThrottle(probeErr) || (response != nil && response.TimedOut)
+	throttled := isProviderThrottle(probeErr)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !throttled {
@@ -613,11 +623,15 @@ func (a *probeAdmission) record(provider schemas.ModelProvider, response *ModelT
 		if a.blockedUntil != nil {
 			delete(a.blockedUntil, provider)
 		}
+		if a.blockedFor != nil {
+			delete(a.blockedFor, provider)
+		}
 		return
 	}
 	if a.failures == nil {
 		a.failures = make(map[schemas.ModelProvider]int, 4)
 		a.blockedUntil = make(map[schemas.ModelProvider]time.Time, 4)
+		a.blockedFor = make(map[schemas.ModelProvider]time.Duration, 4)
 	}
 	a.failures[provider]++
 	backoff := probeFailureBackoff << (a.failures[provider] - 1)
@@ -625,6 +639,7 @@ func (a *probeAdmission) record(provider schemas.ModelProvider, response *ModelT
 		backoff = probeMaxBackoff
 	}
 	a.blockedUntil[provider] = time.Now().Add(backoff)
+	a.blockedFor[provider] = backoff
 }
 
 // isProviderThrottle reports whether the provider asked to be left alone (429) or said it cannot
