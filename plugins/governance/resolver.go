@@ -216,9 +216,12 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 			gated = requested
 		}
 		if gated != "" && !access.ModelListed(string(provider), gated) {
+			// A routing rule the key listed is the exception: calling it by name lands the request
+			// on the rule's own targets and fallbacks, models the block never shows. The rule is
+			// looked up by the name the caller sent, the name /v1/models advertised.
 			rules := r.store.RoutingRules()
 			listedRule := !evaluationRequest.NestedModel && requested != "" &&
-				slices.Contains(access.ListedRules(), requested)
+				slices.ContainsFunc(access.ListedRules(), func(name string) bool { return strings.EqualFold(name, requested) })
 			if !listedRule || rules == nil || !rules.AllowsRequest(ctx, requested, string(provider), model) {
 				return &EvaluationResult{
 					Decision: DecisionModelBlocked,

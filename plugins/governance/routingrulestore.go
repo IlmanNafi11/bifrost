@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -119,7 +120,7 @@ func (s *RoutingRuleStore) storeLocked(rule *configstoreTables.TableRoutingRule)
 
 // scopeKey is the name index key this definition is stored under.
 func (def *routingRuleDefinition) scopeKey() ruleScopeKey {
-	return ruleScopeKey{scope: def.scope, scopeID: def.scopeID, name: def.name}
+	return ruleScopeKey{scope: def.scope, scopeID: def.scopeID, name: strings.ToLower(def.name)}
 }
 
 // Reload refreshes the cached definition of one rule after an edit. The rule is read from the store
@@ -258,7 +259,7 @@ func (s *RoutingRuleStore) AllowsRequest(ctx context.Context, requestedRuleName 
 
 // lookup resolves a rule name against the caller's scope chain and reports it only when it is
 // enabled. A name is unique per scope but one scope holds many names, so the lookup walks the chain
-// from most to least specific and asks for this exact name at each level.
+// from most to least specific and asks for this exact name at each level, case-insensitively.
 func (s *RoutingRuleStore) lookup(ctx context.Context, name string) *routingRuleDefinition {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -266,7 +267,8 @@ func (s *RoutingRuleStore) lookup(ctx context.Context, name string) *routingRule
 		if level.scope != "global" && level.id == "" {
 			continue
 		}
-		if def := s.byName[ruleScopeKey{scope: level.scope, scopeID: level.id, name: name}]; def != nil {
+		key := ruleScopeKey{scope: level.scope, scopeID: level.id, name: strings.ToLower(name)}
+		if def := s.byName[key]; def != nil {
 			return def.enabledOrNil()
 		}
 	}

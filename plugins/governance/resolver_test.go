@@ -1727,6 +1727,35 @@ func TestBudgetResolver_EvaluateRequest_ListedModels(t *testing.T) {
 		assertDecision(t, DecisionAllow, result)
 	})
 
+	t.Run("a listed rule matches case-insensitively", func(t *testing.T) {
+		// The rule is listed and advertised by its stored name ("coding"), but the caller may send
+		// any case ("CODING", "Coding"). Rule names are matched the way model names are: case-folded.
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "CODING")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionAllow, result)
+	})
+
+	t.Run("a listed rule differing only in case still refuses a model it does not reach", func(t *testing.T) {
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "Coding")
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.DeepSeek, "deepseek-v4-pro", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionModelBlocked, result)
+	})
+
+	t.Run("a listed rule is looked up by the name the caller sent, not the model the request sits on", func(t *testing.T) {
+		// A rule the caller named - say "coding" - rewrites the request to a target model like
+		// "deepseek-v4-flash". The listing gate must resolve the rule by the caller's name, because
+		// that is what the key listed and what /v1/models showed. When that name differs from the
+		// final model, the store lookup has to use the former.
+		ctx := resolverCtx(store, "sk-bf-listed")
+		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+		// The rewrite between the caller's rule name and the final model also differs from the
+		// requested name, so the earlier "model != requested" refinement can not reject it either.
+		result := evaluateVirtualKey(resolver, ctx, "sk-bf-listed", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false)
+		assertDecision(t, DecisionAllow, result)
+	})
+
 	t.Run("a listed rule does not open a model it does not reach", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-listed")
 		ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")

@@ -319124,6 +319124,67 @@
           }
         }
       ]
+    },
+    {
+      "name": "340. Virtual key listed_models: a rule name matches the caller case-insensitively (listed models case)",
+      "description": "A listed_models block names a routing rule by its stored name. The caller invokes the rule by model name, and that spelling may differ in case from the stored rule name (the rule matches on the model string, while the block and /v1/models advertise the stored name). The listing gate and the routing-rule exception must therefore fold case when matching the requested name to the listed rule and to the rule cache, exactly as model names are matched case-insensitively. Pre-fix, a capitalized stored rule invoked by its lowercase spelling was refused with 403 model_blocked.",
+      "item": [
+        {
+          "name": "openai a listed rule whose name differs in case from the caller's model opens its own target - listed models case",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');\nvar PREFIX = 'harness-listmcase-';\nvar GATE = 'x-harness-listmcase-run';\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(state, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; h[GATE] = state.run; h['x-bf-vk'] = state.vk.value;\n  var b = { model: model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 };\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null); }\n    cb(res);\n  });\n}\nfunction cleanup(state) {\n  var paths = [];\n  (state.rules || []).forEach(function (id) { paths.push('/api/governance/routing-rules/' + id); });\n  if (state.vk) { paths.push('/api/governance/virtual-keys/' + state.vk.id); }\n  (function next() {\n    if (!paths.length) { return; }\n    var p = paths.shift();\n    call('DELETE', p, null, function (res) {\n      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });\n      next();\n    });\n  })();\n}\nfunction isStale(name) {\n  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }\nfunction rule(label, cb) {\n  var name = 'listm-Case-' + run;\n  call('POST', '/api/governance/routing-rules', {\n    name: name,\n    description: 'Provider harness, created at run time and deleted by the same row.',\n    priority: 300000 + Math.floor(Math.random() * 600000),\n    cel_expression: '\"' + GATE + '\" in headers && headers[\"' + GATE + '\"] == \"' + run + '\" && model == \"' + name.toLowerCase() + '\"',\n    targets: [{ provider: 'openai', model: 'gpt-4o-mini', weight: 1 }],\n    scope: 'global'\n  }, function (res, j) {\n    if (!expectOk('setup: created the routing rule ' + label, res)) { return cb(false); }\n    var id = ((j || {}).rule || {}).id;\n    state.ruleIds[label] = id; state.ruleNames[label] = name; state.rules.push(id); cb();\n  });\n}\nfunction virtualKey(listedModels, cb) {\n  call('POST', '/api/governance/virtual-keys', {\n    name: PREFIX + 'vk-' + run,\n    provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }],\n    listed_models: listedModels\n  }, function (res, j) {\n    if (!expectOk('setup: created the virtual key with its listed_models block', res)) { return cb(false); }\n    var vk = (j || {}).virtual_key || {};\n    state.vk = { id: vk.id, value: (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value }; cb();\n  });\n}\nfunction sweepThen(setup, done) {\n  call('GET', '/api/governance/virtual-keys', null, function (r0, j0) {\n    var stale = ((j0 && j0.virtual_keys) || []).filter(function (v) { return isStale(v.name); });\n    (function nextSweep() {\n      if (stale.length) { return call('DELETE', '/api/governance/virtual-keys/' + stale.shift().id, null, function () { nextSweep(); }); }\n      seq(setup, function () { done(); });\n    })();\n  });\n}\nvar run = 'run-' + Date.now();\nvar state = { run: run, rules: [], ruleIds: {}, ruleNames: {} };\nsweepThen([\n  function (next) { rule('coding', next); },\n  function (next) { virtualKey([{ routing_rule: state.ruleNames.coding }], next); }\n], function () {\n  pm.collectionVariables.set('listmcaseState', JSON.stringify(state));\n  pm.collectionVariables.set('listmcaseRun', run);\n  pm.collectionVariables.set('listmcaseVK', (state.vk || {}).value || 'missing');\n  pm.collectionVariables.set('listmcaseRule', (state.ruleNames || {}).coding || 'missing');\n  pm.collectionVariables.set('listmcaseRuleLower', ((state.ruleNames || {}).coding || 'missing').toLowerCase());\n});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');\nvar PREFIX = 'harness-listmcase-';\nvar GATE = 'x-harness-listmcase-run';\nfunction call(method, path, body, cb) {\n  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };\n  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }\n  pm.sendRequest(req, function (err, res) {\n    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }\n    var json = null; try { json = res.json(); } catch (e) { json = null; }\n    cb(res, json);\n  });\n}\nfunction expectOk(label, res) {\n  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });\n  return !!(res && res.code === 200);\n}\nfunction chat(state, model, cb) {\n  var h = { 'Content-Type': 'application/json' }; h[GATE] = state.run; h['x-bf-vk'] = state.vk.value;\n  var b = { model: model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 };\n  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {\n    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null); }\n    cb(res);\n  });\n}\nfunction cleanup(state) {\n  var paths = [];\n  (state.rules || []).forEach(function (id) { paths.push('/api/governance/routing-rules/' + id); });\n  if (state.vk) { paths.push('/api/governance/virtual-keys/' + state.vk.id); }\n  (function next() {\n    if (!paths.length) { return; }\n    var p = paths.shift();\n    call('DELETE', p, null, function (res) {\n      pm.test('cleanup: ' + p.split('/').slice(0, 4).join('/') + ' removed', function () { pm.expect([200, 204, 404], res ? res.text() : 'no response').to.include(res && res.code); });\n      next();\n    });\n  })();\n}\nfunction isStale(name) {\n  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);\n  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);\n}\nfunction seq(list, done) { var i = 0; (function next(ok) { if (ok === false || i >= list.length) { return done(ok !== false); } list[i++](next); })(); }\nvar state = JSON.parse(pm.collectionVariables.get('listmcaseState') || '{}');\nvar text = pm.response.text();\npm.test('naming a listed rule in a different case is served by its own target: ' + text.slice(0, 600), function () {\n  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);\n});\npm.test('the routing headers name the rule the caller asked for and the model that served it', function () {\n  pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-model'), text.slice(0, 600)).to.equal((state.ruleNames || {}).coding.toLowerCase() || '');\n  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), text.slice(0, 600)).to.equal('gpt-4o-mini');\n  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), text.slice(0, 600)).to.equal('openai');\n});\ncleanup(state);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{listmcaseVK}}"
+              },
+              {
+                "key": "x-harness-listmcase-run",
+                "value": "{{listmcaseRun}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{listmcaseRuleLower}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

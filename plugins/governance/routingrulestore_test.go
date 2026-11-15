@@ -121,6 +121,12 @@ func TestRoutingRuleStore_AllowsRequest(t *testing.T) {
 	t.Run("a rule with no targets at all names nothing", func(t *testing.T) {
 		assert.False(t, rules.AllowsRequest(ctx, "anything", "openai", "gpt-4o"))
 	})
+
+	t.Run("rule name lookup is case-insensitive", func(t *testing.T) {
+		assert.True(t, rules.AllowsRequest(ctx, "CODING", "deepseek", "deepseek-v4-flash"))
+		assert.True(t, rules.AllowsRequest(ctx, "Coding", "bedrock", "kimi-k3"))
+		assert.False(t, rules.AllowsRequest(ctx, "CoDiNg", "openai", "gpt-4o"), "the exception still reaches only the rule's own targets")
+	})
 }
 
 // Scope matching follows the routing chain: a rule at any level the request reaches applies, and the
