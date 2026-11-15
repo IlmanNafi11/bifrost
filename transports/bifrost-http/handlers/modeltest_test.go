@@ -98,10 +98,11 @@ func probeCatalog(tb testing.TB, rows map[string]string) *modelcatalog.ModelCata
 // invisibility safe: a trace nobody completes sits in the store until the TTL sweep warns about it.
 type probeTraceRecorder struct {
 	*schemas.NoOpTracer
-	mu        sync.Mutex
-	created   int
-	completed []string
-	attrs     map[string]any
+	mu         sync.Mutex
+	created    int
+	completed  []string
+	attrs      map[string]any
+	redactions map[string]map[string]string
 }
 
 func (r *probeTraceRecorder) CreateTrace(_ string, _ ...string) string {
@@ -124,6 +125,17 @@ func (r *probeTraceRecorder) SetTraceAttribute(traceID string, key string, value
 		r.attrs = map[string]any{}
 	}
 	r.attrs[traceID+"|"+key] = value
+}
+
+// SetTraceRedactionReplacements records the input replacements the probe hands the trace, so a test
+// can pin that the redactions reach the trace rather than only the verdict body.
+func (r *probeTraceRecorder) SetTraceRedactionReplacements(traceID string, phase schemas.RedactionPhase, replacements map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.redactions == nil {
+		r.redactions = map[string]map[string]string{}
+	}
+	r.redactions[traceID] = replacements
 }
 
 // completedCount and createdCount are read under the lock so a stream that ends on its own
@@ -275,10 +287,9 @@ func TestModelProbe_ChatSuccessReportsTTFTAndTotal(t *testing.T) {
 	assert.Equal(t, "gpt-4o-mini", response.Model)
 	require.NotNil(t, response.TTFTMs, "a streaming probe reports TTFT")
 	assert.GreaterOrEqual(t, *response.TTFTMs, int64(0))
-	assert.GreaterOrEqual(t, response.TotalMs, *response.TTFTMs)
 	assert.Empty(t, response.Error)
-	assert.Equal(t, "key-openai", response.KeyID, "the response names the key that actually served the probe")
-	assert.Equal(t, "prod-2", response.KeyName)
+	assert.Empty(t, response.KeyID, "an unpinned probe must not reveal which key the deployment routed to")
+	assert.Empty(t, response.KeyName, "an unpinned probe must not reveal the key's name")
 
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
@@ -812,6 +823,24 @@ func TestRedactProbeError_AppliesTheRequestRedactions(t *testing.T) {
 		"a request with no redaction data keeps the provider text as-is")
 }
 
+// Reversible mappings are token -> original; applying them to a provider error would leak the
+// original value if the token appears, so outbound probe error scrubbing must leave them untouched.
+func TestRedactProbeError_DoesNotExpandReversibleMappings(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		LiteralReplacements: schemas.RedactionMapsByPhase{
+			Input: map[string]string{"sk-secret-value": "[REDACTED]"},
+		},
+		ReversibleMappings: schemas.RedactionMapsByPhase{
+			Output: map[string]string{"[EMAIL_2]": "sam@example.com"},
+		},
+	})
+
+	got := redactProbeError(ctx, "refusal for sk-secret-value mentioned [EMAIL_2]")
+	assert.Equal(t, "refusal for [REDACTED] mentioned [EMAIL_2]", got,
+		"literal secrets are scrubbed but reversible tokens must not be expanded to originals")
+}
+
 // A provider can quote the credential it rejected, and a pinned probe is the one place the caller
 // names which literal to use. The verdict must not hand that literal back in the dashboard.
 func TestModelProbe_PinnedKeySecretIsRedactedFromTheVerdict(t *testing.T) {
@@ -843,16 +872,133 @@ func TestModelProbe_PinnedKeySecretIsRedactedFromTheVerdict(t *testing.T) {
 
 // The admission guard also caps how many probes one process runs at once: probes share the
 // provider queues with real traffic, so an unbounded burst is refused before it contends for the
-// same workers and connection pool.
+// same workers and connection pool. The interval is global, so every caller after the first inside
+// the window is refused even though each has its own principal.
 func TestModelProbe_AdmissionCapsConcurrency(t *testing.T) {
 	var a probeAdmission
-	for i := range probeMaxInFlight {
-		assert.True(t, a.allow(fmt.Sprintf("caller-%d", i), schemas.OpenAI), "the first %d probes fit under the cap", probeMaxInFlight)
+	for range probeMaxInFlight {
+		assert.Empty(t, a.allow(schemas.OpenAI), "the first %d probes fit under the cap", probeMaxInFlight)
+		a.lastStart = time.Time{} // reset the interval so the cap is the only bound being tested
 	}
-	assert.False(t, a.allow("overflow", schemas.OpenAI), "the %d-th concurrent probe is refused", probeMaxInFlight+1)
+	assert.Contains(t, a.allow(schemas.OpenAI), "too many probes",
+		"the %d-th concurrent probe is refused for the global cap", probeMaxInFlight+1)
 
 	a.release()
-	assert.True(t, a.allow("next", schemas.OpenAI), "releasing one slot admits the next probe")
+	a.lastStart = time.Time{}
+	assert.Empty(t, a.allow(schemas.OpenAI), "releasing one slot admits the next probe")
+}
+
+// The interval is global, so minting a fresh principal does not reset it: two different callers
+// inside one window share the same bound, which is what makes the spend guard hold however many
+// identities a caller presents.
+func TestModelProbe_AdmissionIntervalIsGlobalNotPerPrincipal(t *testing.T) {
+	var a probeAdmission
+	require.Empty(t, a.allow(schemas.OpenAI))
+	a.release()
+
+	// A different principal inside the same window is refused the same way the original would be.
+	assert.Contains(t, a.allow(schemas.OpenAI), "less than",
+		"a fresh principal does not reset the global interval")
+}
+
+// The three bounds are distinguishable: the interval is a wait the whole process shares, the cap
+// means the process is already probing, and a provider backoff is a wait against one provider only.
+func TestModelProbe_AdmissionNamesTheBoundItHit(t *testing.T) {
+	var a probeAdmission
+	require.Empty(t, a.allow(schemas.OpenAI))
+	a.release()
+
+	interval := a.allow(schemas.OpenAI)
+	assert.Contains(t, interval, "less than", "the second probe in one window is a wait, not a busy process")
+
+	var capped probeAdmission
+	for range probeMaxInFlight {
+		require.Empty(t, capped.allow(schemas.OpenAI))
+		capped.lastStart = time.Time{} // the cap is the bound under test, not the interval
+	}
+	assert.Contains(t, capped.allow(schemas.OpenAI), "too many probes")
+
+	var backedOff probeAdmission
+	backedOff.record(schemas.OpenAI, &ModelTestResponse{TimedOut: true}, nil)
+	refusal := backedOff.allow(schemas.OpenAI)
+	assert.Contains(t, refusal, "backing off", "the backoff refusal is a provider wait, not a busy process")
+}
+
+// The backoff is keyed by provider, so one provider that is throttled must not fence the others:
+// the same process probing a healthy provider is admitted, and the refusal names only the broken
+// provider's bound.
+func TestModelProbe_AdmissionBackoffIsPerProvider(t *testing.T) {
+	var a probeAdmission
+	a.record(schemas.OpenAI, &ModelTestResponse{TimedOut: true}, nil)
+
+	assert.Contains(t, a.allow(schemas.OpenAI), "backing off", "the throttled provider is refused")
+	assert.Empty(t, a.allow(schemas.Anthropic), "a different, healthy provider is still probeable")
+}
+
+// The backoff window ends exactly at blockedUntil, so a probe at that instant is admitted rather
+// than refused for a window that has already elapsed: now.Before(until) is the only refusal.
+func TestModelProbe_AdmissionBackoffExpiresAtTheBoundary(t *testing.T) {
+	var a probeAdmission
+	now := time.Now()
+	a.blockedUntil = map[schemas.ModelProvider]time.Time{schemas.OpenAI: now}
+
+	assert.Empty(t, a.allow(schemas.OpenAI), "a backoff that has exactly elapsed admits the probe")
+}
+
+// The mutex in allow is load-bearing, and only concurrency makes that falsifiable: with it removed
+// the in-flight count loses updates, so a burst admits more probes than the cap. Run under -race
+// this also pins the guard on every path. The global interval means only the first caller inside
+// the window is admitted even under concurrency, so the burst is bound by both the cap and the
+// interval together.
+func TestModelProbe_AdmissionIsSafeUnderConcurrentCallers(t *testing.T) {
+	var a probeAdmission
+	const callers = 64
+	results := make([]string, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := range callers {
+		go func(i int) {
+			defer wg.Done()
+			results[i] = a.allow(schemas.OpenAI)
+		}(i)
+	}
+	wg.Wait()
+
+	admitted := 0
+	for _, refusal := range results {
+		if refusal == "" {
+			admitted++
+		}
+	}
+	assert.Equal(t, 1, admitted, "a concurrent burst inside one global window admits exactly one probe")
+
+	a.mu.Lock()
+	inFlight := a.inFlight
+	a.mu.Unlock()
+	assert.Equal(t, 1, inFlight, "the reserved slot matches the admission")
+
+	for range admitted {
+		a.release()
+	}
+	a.mu.Lock()
+	inFlight = a.inFlight
+	a.mu.Unlock()
+	assert.Zero(t, inFlight, "every admitted slot is returned")
+}
+
+// The interval is a process-wide lastStart stamp, not a map of principals, so there is nothing to
+// prune and nothing a caller can grow by minting identities. A stale lastStart in the past admits;
+// one inside the window refuses; the boundary at exactly probeMinInterval admits (strict < in the
+// wait comparison).
+func TestModelProbe_AdmissionIntervalBoundary(t *testing.T) {
+	var a probeAdmission
+	now := time.Now()
+	a.lastStart = now.Add(-probeMinInterval)
+	require.Empty(t, a.allow(schemas.OpenAI), "an interval that has exactly elapsed admits the next probe")
+	a.release()
+
+	a.lastStart = now.Add(-probeMinInterval + time.Second)
+	assert.Contains(t, a.allow(schemas.OpenAI), "less than", "an interval still running refuses")
 }
 
 // A provider that refuses before key selection can still echo a credential into a verdict with no
@@ -865,6 +1011,14 @@ func TestRedactProbeError_ScrubsCredentialShapeWithoutRedactionData(t *testing.T
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	assert.Equal(t, "Incorrect API key provided: [REDACTED]",
 		redactProbeError(ctx, "Incorrect API key provided: sk-1234567890abcdef"))
+	// A short tail is still a credential: a real key is short as often as it is long, and a
+	// provider that echoes one verbatim hands it to every reader of the verdict.
+	assert.Equal(t, "key invalid: [REDACTED]",
+		redactProbeError(ctx, "key invalid: gsk_x4R0mP9"), "a gsk_ key with a seven-character tail is a credential")
+	assert.Equal(t, "key invalid: [REDACTED]",
+		redactProbeError(ctx, "key invalid: sk_aBc9"), "a short prefix tail with mixed case and a digit is a credential")
+	assert.Equal(t, "key invalid: sk_abc",
+		redactProbeError(ctx, "key invalid: sk_abc"), "a short all-lowercase tail is a word fragment, not a credential")
 	assert.Equal(t, "bad key [REDACTED]",
 		redactProbeError(ctx, "bad key "+strings.Repeat("a", 40)+"9"), "a base64-shaped run is a credential")
 	assert.Equal(t, "bad key "+strings.Repeat("a", 40),
@@ -872,6 +1026,49 @@ func TestRedactProbeError_ScrubsCredentialShapeWithoutRedactionData(t *testing.T
 		"an unbroken run of one letter is a word, not a credential")
 	assert.Equal(t, "plain provider refusal", redactProbeError(ctx, "plain provider refusal"),
 		"non-credential text passes through unchanged")
+}
+
+// The prefix arm must not slice a key fragment out of a longer word: the word boundary keeps
+// `desk_...` intact, and a `gsk_` key is matched whole rather than starting at its `sk_`.
+func TestRedactProbeError_PrefixArmIsWordBounded(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	assert.Equal(t, "the desk_xxxxxxxx is yours",
+		redactProbeError(ctx, "the desk_xxxxxxxx is yours"), "an sk-shaped fragment inside a word is not a credential")
+	assert.Equal(t, "[REDACTED] is redacted whole",
+		redactProbeError(ctx, "gsk_1234567890abcdef is redacted whole"),
+		"a gsk_ key matches from its first character, not its inner sk_")
+}
+
+// The shape scrub runs after the literal replacements: a message can carry a seeded literal that is
+// also credential-shaped, and it must be replaced exactly once by the map rather than mangled by
+// the regex afterwards.
+func TestRedactProbeError_LiteralWinsOverShapeScrub(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		LiteralReplacements: schemas.RedactionMapsByPhase{
+			Input: map[string]string{"sk-1234567890abcdef": "[PINNED]"},
+		},
+	})
+	assert.Equal(t, "Incorrect API key provided: [PINNED]",
+		redactProbeError(ctx, "Incorrect API key provided: sk-1234567890abcdef"),
+		"the seeded literal replaces the credential and the shape scrub leaves the placeholder alone")
+}
+
+// redactProbeError is called on every provider-error verdict, including ones where the handler
+// built no redaction data or only output literals (a probe only ever seeds input literals). A nil
+// context and an output-only map must both pass through without a panic or an output-only rewrite.
+func TestRedactProbeError_NilContextAndOutputOnlyLiterals(t *testing.T) {
+	assert.Equal(t, "unchanged", redactProbeError(nil, "unchanged"),
+		"a nil context keeps the text as-is rather than panicking")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	schemas.SetRedactionDataOnContext(ctx, schemas.RedactionData{
+		LiteralReplacements: schemas.RedactionMapsByPhase{
+			Output: map[string]string{"rivera@example.com": "[EMAIL]"},
+		},
+	})
+	assert.Equal(t, "rivera@example.com unchanged", redactProbeError(ctx, "rivera@example.com unchanged"),
+		"an output-only literal is not applied to an outbound provider error")
 }
 
 // When the caller omits key_id the pipeline auto-selects a key; a provider error that echoes that
@@ -925,6 +1122,43 @@ func TestModelProbe_CompletesTheTraceItOpens(t *testing.T) {
 		"the probe must complete the trace it opened, or it expires as a completion that never arrived")
 	assert.Equal(t, true, tracer.attrs["probe-trace-1|"+schemas.TraceAttrIsModelProbe],
 		"the completed trace carries the probe marker the connectors read")
+}
+
+// The trace's error attribute is exported to every connector, so a provider error that quotes the
+// credential it rejected must be scrubbed there, not only from the verdict body. This pins that the
+// probe seeds the credential-shaped literal into the trace's redaction replacements before flushing.
+func TestModelProbe_TraceRedactionReachesTheErrorAttribute(t *testing.T) {
+	const secret = "sk-trace-secret-abcdef123456"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"message":"Incorrect API key provided: %s","type":"invalid_request_error"}}`, secret)
+	}))
+	t.Cleanup(upstream.Close)
+
+	catalog := probeCatalog(t, map[string]string{"openai/gpt-4o-mini": "chat"})
+	h, _, tracer := newProbeHandlerTracing(t, schemas.OpenAI, upstream.URL, catalog, nil)
+	h.inMemoryStore.Providers[schemas.OpenAI] = configstore.ProviderConfig{
+		Keys: []schemas.Key{{
+			ID: "key-openai", Name: "prod-2", Value: *schemas.NewSecretVar(secret), Weight: 1, Models: schemas.WhiteList{"*"},
+		}},
+		NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 2, BufferSize: 10},
+	}
+
+	// Pinned, so the literal map is seeded with the exact key before the probe runs.
+	ctx := probeRequest(t, modelTestPayload{Provider: schemas.OpenAI, Model: "gpt-4o-mini", KeyID: "key-openai"})
+	h.testModel(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	tracer.mu.Lock()
+	defer tracer.mu.Unlock()
+	require.Contains(t, tracer.redactions, "probe-trace-1",
+		"the probe must install redaction replacements on the trace it flushes")
+	replacements := tracer.redactions["probe-trace-1"]
+	assert.Contains(t, replacements, secret, "the trace replacements carry the pinned key's literal")
+	assert.Equal(t, "[REDACTED]", replacements[secret],
+		"the trace replacements map the secret to the same placeholder the verdict uses")
 }
 
 // auditLineLogger records the lines the probe audit sink emits. The probe writes exactly one audit

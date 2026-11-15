@@ -44172,9 +44172,6 @@
                       "type": "string",
                       "description": "Name of the provider key that served the probe."
                     },
-                    "note": {
-                      "type": "string"
-                    },
                     "error": {
                       "type": "string",
                       "description": "Provider error or `timeout setelah 60s`, present when ok is false."

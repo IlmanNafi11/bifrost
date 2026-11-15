@@ -133,8 +133,17 @@ func SetRedactionDataOnContext(ctx *BifrostContext, data RedactionData) bool {
 	return true
 }
 
-// IsContentAttribute reports whether a span attribute may carry user or model content.
+// IsContentAttribute reports whether a span attribute may carry user or model content and is
+// therefore stripped when content logging is disabled.
+//
+// AttrError is the one key whose redaction scope and content membership diverge: a provider
+// refusal can quote either the request's secret or the model's output, so the error text is
+// redacted by both phases, but it is not content — an error message is the operator's only
+// signal for a failed call and must survive disable_content_logging.
 func IsContentAttribute(key string) bool {
+	if key == AttrError {
+		return false
+	}
 	return traceContentAttributeScopeForKey(key) != traceContentAttributeScopeNone
 }
 

@@ -582,6 +582,12 @@ func traceContentAttributeScopeForKey(key string) traceContentAttributeScope {
 		return traceContentAttributeScopeInput
 	case AttrOutputMessages, AttrRespReasoningText, AttrBifrostRawResponse:
 		return traceContentAttributeScopeOutput
+	case AttrError:
+		// A provider's refusal quotes whatever it was handed: a credential the request carried, or
+		// content from the response it was judging. Either phase can be the one that produced the
+		// literal, so the error text takes both - with only the input phase an output-derived secret
+		// would be exported verbatim, and the span is what connectors read.
+		return traceContentAttributeScopeMixed
 	case AttrToolName, AttrToolCallID, AttrToolCallArguments, AttrToolCallResult, AttrToolType:
 		return traceContentAttributeScopeMixed
 	default:

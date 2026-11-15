@@ -302,3 +302,89 @@ func TestTraceTraceStateAccessor(t *testing.T) {
 		t.Errorf("TraceTraceState() with a non-string = %q, want empty", got)
 	}
 }
+
+// The verdict body is scrubbed by the handler, but the same provider message is written to the
+// span's error attribute and exported to every connector. A credential echoed by a provider must be
+// gone from the trace too, or the scrub only covers the surface a client sees.
+func TestTraceRedactionReachesTheErrorAttribute(t *testing.T) {
+	const secret = "sk-probe-secret-value"
+	trace := &Trace{
+		RootSpan: &Span{SpanID: "root", Attributes: map[string]any{
+			AttrError:          "Incorrect API key provided: " + secret,
+			AttrErrorTypeSpec:  "authentication_error",
+			AttrInputMessages:  "hello",
+			AttrOutputMessages: "the key " + secret + " was rejected",
+		}},
+	}
+	trace.SetRedactionReplacements(RedactionPhaseInput, map[string]string{secret: "[REDACTED]"})
+	trace.ApplyRedactionReplacements()
+
+	got, _ := trace.RootSpan.GetAttribute(AttrError)
+	if strings.Contains(got.(string), secret) {
+		t.Fatalf("the error attribute still carries the credential: %v", got)
+	}
+	if got != "Incorrect API key provided: [REDACTED]" {
+		t.Fatalf("error attribute = %v", got)
+	}
+	// The error takes both phases, but a plain input attribute stays input-only: an input
+	// replacement rewrites what the caller sent, never what the model answered.
+	if out, _ := trace.RootSpan.GetAttribute(AttrOutputMessages); strings.Contains(out.(string), "[REDACTED]") {
+		t.Fatalf("an input replacement rewrote response content: %v", out)
+	}
+}
+
+// An error is not always a request problem - a refusal describing the model's own output still
+// carries content - so both phases reach it.
+func TestTraceRedactionAppliesTheMatchingPhaseToTheErrorAttribute(t *testing.T) {
+	const secret = "rivera@example.com"
+	trace := &Trace{RootSpan: &Span{SpanID: "root", Attributes: map[string]any{
+		AttrError: "output rejected: " + secret,
+	}}}
+	trace.SetRedactionReplacements(RedactionPhaseOutput, map[string]string{secret: "<EMAIL>"})
+	trace.ApplyRedactionReplacements()
+
+	if got, _ := trace.RootSpan.GetAttribute(AttrError); strings.Contains(got.(string), secret) {
+		t.Fatalf("an output-phase replacement did not reach the error attribute: %v", got)
+	}
+}
+
+// A literal can sit in both phases with different placeholders when a guardrail redacted it in the
+// request and the output again. The merged map that redacts a mixed attribute resolves the
+// collision the same way everywhere: the output phase wins, so the same text redacts the same way
+// in a mixed attribute as it does in a pure output one.
+func TestTraceRedactionMergePrefersTheOutputPlaceholder(t *testing.T) {
+	const secret = "dupe@example.com"
+	trace := &Trace{RootSpan: &Span{SpanID: "root", Attributes: map[string]any{
+		AttrError:          "refused: " + secret,
+		AttrOutputMessages: "answered: " + secret,
+	}}}
+	trace.SetRedactionReplacements(RedactionPhaseInput, map[string]string{secret: "[IN]"})
+	trace.SetRedactionReplacements(RedactionPhaseOutput, map[string]string{secret: "[OUT]"})
+	trace.ApplyRedactionReplacements()
+
+	got, _ := trace.RootSpan.GetAttribute(AttrError)
+	if got != "refused: [OUT]" {
+		t.Fatalf("error attribute = %v, want the output placeholder", got)
+	}
+}
+
+// An error attribute need not exist: applying replacements to a trace without one is a no-op, and
+// a non-string error value is left as it is.
+func TestTraceRedactionHandlesAnAbsentOrNonStringErrorAttribute(t *testing.T) {
+	trace := &Trace{RootSpan: &Span{SpanID: "root", Attributes: map[string]any{}}}
+	trace.SetRedactionReplacements(RedactionPhaseInput, map[string]string{"x": "[X]"})
+	trace.ApplyRedactionReplacements() // must not panic
+
+	if _, ok := trace.RootSpan.GetAttribute(AttrError); ok {
+		t.Fatal("an absent error attribute was created by the redaction pass")
+	}
+
+	nonString := &Trace{RootSpan: &Span{SpanID: "root", Attributes: map[string]any{
+		AttrError: 42,
+	}}}
+	nonString.SetRedactionReplacements(RedactionPhaseInput, map[string]string{"x": "[X]"})
+	nonString.ApplyRedactionReplacements()
+	if got, _ := nonString.RootSpan.GetAttribute(AttrError); got != 42 {
+		t.Fatalf("a non-string error attribute = %v, want unchanged", got)
+	}
+}

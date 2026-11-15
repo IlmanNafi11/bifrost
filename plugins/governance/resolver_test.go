@@ -1805,6 +1805,81 @@ func TestPreLLMHookListedModels_RefusalAllowsTheChainToReEngage(t *testing.T) {
 	assert.Equal(t, schemas.ErrorTypePolicyModelBlocked, shortCircuit.Error.ExtraFields.ErrorType)
 }
 
+// A key's rule entries depend on the rule cache being populated from wherever the deployment keeps
+// its rules. There are two cold-start paths - the config store in a database deployment, the config
+// file otherwise - and nothing else switches between them, so swapping them would leave every
+// database deployment's listed keys refusing their own rules until the first rule edit. The
+// config-file path is exercised by every case above (they pass a GovernanceConfig and no store);
+// this covers the store path end to end, through the resolver the operator observes.
+func TestBudgetResolver_EvaluateRequest_ListedRuleIsSeededFromTheConfigStore(t *testing.T) {
+	logger := NewMockLogger()
+	ctx := context.Background()
+	store := newRuleCacheTestStore(t,
+		ruleTo("rule-coding", "coding", "global", nil, true, "deepseek", "deepseek-v4-flash"))
+
+	vk := buildVirtualKey("vk-db", "sk-bf-db", "DB Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("deepseek", []string{"*"})}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+
+	govStore, err := NewLocalGovernanceStore(ctx, logger, store, nil, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(govStore, nil, logger, nil)
+
+	call := func() *schemas.BifrostContext {
+		c := resolverCtx(govStore, "sk-bf-db")
+		c.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+		return c
+	}
+	assertDecision(t, DecisionAllow,
+		evaluateVirtualKey(resolver, call(), "sk-bf-db", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false))
+	assertDecision(t, DecisionModelBlocked,
+		evaluateVirtualKey(resolver, call(), "sk-bf-db", schemas.DeepSeek, "deepseek-v4-pro", schemas.ChatCompletionRequest, false, false))
+
+	// A rule deleted in the dashboard stops opening its targets for the very next request: the
+	// listed key keeps its entry, but the entry no longer names a rule that exists.
+	govStore.routingRules.Remove("rule-coding")
+	result := evaluateVirtualKey(resolver, call(), "sk-bf-db", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false)
+	assertDecision(t, DecisionModelBlocked, result)
+	assert.NotContains(t, result.Reason, "routing rule", "a removed rule is unknown, not disabled")
+}
+
+// The positive half of the rule exception, at the resolver rather than the store: a block of rules
+// alone - no model entries at all - admits the target of a rule the key lists, on a provider it
+// does configure. Without this the refusal cases above could all pass with the exception removed.
+func TestBudgetResolver_EvaluateRequest_ListedRuleOnlyBlockAdmitsTheRuleTarget(t *testing.T) {
+	logger := NewMockLogger()
+	vk := buildVirtualKey("vk-rules-only", "sk-bf-rules-only", "Rules Only Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("deepseek", []string{"*"}),
+	}
+	vk.ListedModels = []configstoreTables.TableListedModelEntry{{RoutingRule: "coding"}}
+	gov := &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		RoutingRules: []configstoreTables.TableRoutingRule{{
+			ID: "rule-coding", Name: "coding", Scope: "global", Enabled: bifrost.Ptr(true),
+			CelExpression: "true",
+			Targets: []configstoreTables.TableRoutingTarget{{
+				Provider: bifrost.Ptr("deepseek"), Model: bifrost.Ptr("deepseek-v4-flash"), Weight: 1,
+			}},
+		}},
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, gov, nil, nil)
+	require.NoError(t, err)
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+
+	ctx := resolverCtx(store, "sk-bf-rules-only")
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "coding")
+	assertDecision(t, DecisionAllow,
+		evaluateVirtualKey(resolver, ctx, "sk-bf-rules-only", schemas.DeepSeek, "deepseek-v4-flash", schemas.ChatCompletionRequest, false, false))
+
+	// The block names no models, so nothing outside the rule is reachable even on the same provider.
+	other := resolverCtx(store, "sk-bf-rules-only")
+	other.SetValue(schemas.BifrostContextKeyRequestedModel, "deepseek-v4-pro")
+	assertDecision(t, DecisionModelBlocked,
+		evaluateVirtualKey(resolver, other, "sk-bf-rules-only", schemas.DeepSeek, "deepseek-v4-pro", schemas.ChatCompletionRequest, false, false))
+}
+
 // A nested pass - an inline batch item, a passthrough body model, a model a server tool runs -
 // answers for its own model, not the one the caller sent on the request. Reading the stamped
 // request name there would let one listed model launder an unlisted one, since the request's own

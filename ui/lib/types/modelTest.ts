@@ -12,7 +12,6 @@ export interface ModelTestResult {
 	status?: number;
 	key_id?: string;
 	key_name?: string;
-	note?: string;
 	// Present (true) only when the probe's own deadline ended it, distinct from a provider refusal.
 	timed_out?: boolean;
 	error?: string;

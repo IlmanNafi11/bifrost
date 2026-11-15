@@ -67,7 +67,6 @@ type ModelTestResponse struct {
 	Status  *int   `json:"status,omitempty"`
 	KeyID   string `json:"key_id,omitempty"`
 	KeyName string `json:"key_name,omitempty"`
-	Note    string `json:"note,omitempty"`
 	// TimedOut marks a probe its own deadline ended, distinct from a provider refusal.
 	TimedOut bool   `json:"timed_out,omitempty"`
 	Error    string `json:"error,omitempty"`
@@ -136,13 +135,12 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "bifrost client not available")
 		return
 	}
-	// One probe spends real provider tokens, so a probe is a metered action even though it is
-	// invisible to budgets: bound how many one principal can start, and how many a failed probe
-	// leaves the provider rate-limiting before the verdict is refused instead of measured. Taken
+	// A probe spends real provider tokens, so a probe is a metered action even though it is
+	// invisible to budgets: bound how often one may start, and how many a failed probe leaves
+	// the provider rate-limiting before the verdict is refused instead of measured. Taken
 	// last, so a request rejected on its own shape never costs the caller their interval.
-	caller := probePrincipal(ctx)
-	if !h.probeAdmission.allow(caller, payload.Provider) {
-		SendError(ctx, fasthttp.StatusTooManyRequests, "too many probes; wait before probing again")
+	if refusal := h.probeAdmission.allow(payload.Provider); refusal != "" {
+		SendError(ctx, fasthttp.StatusTooManyRequests, refusal)
 		return
 	}
 	defer h.probeAdmission.release()
@@ -181,6 +179,7 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 	defer probeCancel()
 	response := h.runModelProbe(probeCtx, payload.Provider, payload.Model, mode, timeout)
 	finishProbeTrace(probeCtx)
+	caller := probePrincipal(ctx)
 	writeProbeAuditLine(probeAuditEvent{
 		Principal: caller,
 		Provider:  string(payload.Provider),
@@ -200,10 +199,20 @@ func (h *ProviderHandler) testModel(ctx *fasthttp.RequestCtx) {
 // leaves its trace in the store until the TTL sweep exports it as a completion that never arrived.
 // The probe run is over by the time this is called, so nothing can still be adding to the trace;
 // a client that was given no tracer stamps no trace ID and this does nothing.
+//
+// The request's literal redactions are installed first, for the same reason the verdict is scrubbed:
+// a provider that rejects a call can quote the credential it read, and that message also lands in
+// the span's error attribute. Connectors read those attributes, so the scrub has to reach the trace,
+// not just the response body. The input map carries both the pinned key's literal and any
+// credential-shaped literal the error text quoted (seeded by runModelProbe), so the trace's error
+// attribute is scrubbed by the same set the verdict was.
 func finishProbeTrace(ctx *schemas.BifrostContext) {
 	tracer, traceID, err := bifrost.GetTracerFromContext(ctx)
 	if err != nil || tracer == nil {
 		return
+	}
+	if data, ok := schemas.RedactionDataFromContext(ctx); ok {
+		tracer.SetTraceRedactionReplacements(traceID, schemas.RedactionPhaseInput, data.LiteralReplacements.Input)
 	}
 	tracer.CompleteAndFlushTrace(traceID)
 }
@@ -235,17 +244,27 @@ func (h *ProviderHandler) runModelProbe(ctx *schemas.BifrostContext, provider sc
 	probeErr := h.dispatchModelProbe(ctx, provider, model, mode, response, start)
 
 	response.TotalMs = time.Since(start).Milliseconds()
-	response.KeyID = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	response.KeyName = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	// The resolved key identity is echoed back only when the caller pinned a key: they named it,
+	// so they may know it was the one that served the probe. An unpinned probe reports no key,
+	// so the endpoint cannot be used to enumerate which keys the deployment routes real traffic
+	// through.
+	if pinned := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyAPIKeyID); pinned != "" {
+		response.KeyID = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+		response.KeyName = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	}
 
 	switch {
 	case isProbeTimeout(ctx, probeErr):
 		response.Error = fmt.Sprintf("probe timed out after %s", timeout)
 		response.TimedOut = true
 	case probeErr != nil:
+		raw := probeErr.GetErrorString()
 		// A provider's refusal can quote the credential it rejected; the probe verdict is shown in
 		// the dashboard, so the text is passed through the same redaction the response path uses.
-		response.Error = redactProbeError(ctx, probeErr.GetErrorString())
+		// The credential-shaped literals the shape scrub removes are also seeded as literal
+		// replacements, so the same scrub reaches the trace's error attribute.
+		seedProbeCredentialLiterals(ctx, raw)
+		response.Error = redactProbeError(ctx, raw)
 		response.Status = probeErr.StatusCode
 	default:
 		response.OK = true
@@ -469,8 +488,12 @@ func isProbeTimeout(ctx *schemas.BifrostContext, probeErr *schemas.BifrostError)
 // Probe admission bounds. A probe is spend without traffic: it is hidden from logs, cost and
 // budgets, so the only limit that applies is one enforced here.
 const (
-	// probeMinInterval is the shortest gap between two probes one principal may start. A human
-	// testing a model presses the button a few times; a loop pressing it spends a key dry.
+	// probeMinInterval is the shortest gap between two probe starts. A human testing a model
+	// presses the button a few times; a loop pressing it spends a key dry. The gap is global —
+	// a per-principal bound is keyed on whoever the middleware says is calling (a session token,
+	// or the peer IP in an auth-disabled deployment), and a caller can rotate tokens or
+	// distribute across addresses, which turns that bound into no bound at all while the probes
+	// still spend the same deployment keys.
 	probeMinInterval = 2 * time.Second
 	// probeFailureBackoff is how long a provider is left alone after a probe failed in a way that
 	// points at the provider being throttled or down. Probing a provider that just returned 429 or
@@ -513,46 +536,56 @@ func writeProbeAuditLine(event probeAuditEvent) {
 	}
 }
 
-// probeAdmission is the in-process guard for the probe endpoint: a per-principal minimum interval
-// plus a per-provider backoff that grows while probes keep failing and resets on the first success.
-// It is intentionally per-process (not shared across replicas): its job is to stop one caller or one
-// broken provider from being hammered, and every replica enforcing it locally already does that.
+// probeAdmission is the in-process guard for the probe endpoint: a global minimum interval between
+// probe starts, a per-provider backoff that grows while probes keep failing and resets on the first
+// success, and a per-process in-flight cap. It is intentionally per-process (not shared across
+// replicas): its job is to stop a deployment's keys from being spent faster than an operator would
+// reasonably press the button, and every replica enforcing it locally already does that.
+//
+// The interval is deliberately global rather than per-principal. A per-principal bound is keyed on
+// whoever the middleware says is calling — a session token, or the peer IP when auth is disabled —
+// and a caller can rotate the token or distribute across addresses, which turns that bound into no
+// bound at all while every probe still spends the same deployment keys. A single time.Time is the
+// bound that holds however many identities the caller presents.
 type probeAdmission struct {
-	mu           sync.Mutex
-	lastStart    map[string]time.Time
+	mu sync.Mutex
+	// lastStart is when the process last admitted a probe. The interval is global, so a single
+	// time.Time replaces the per-principal map and none can be grown by minting principals.
+	lastStart    time.Time
 	failures     map[schemas.ModelProvider]int
 	blockedUntil map[schemas.ModelProvider]time.Time
 	// inFlight counts probes currently running. allow refuses once probeMaxInFlight is reached,
-	// and release is paired with every allow that returned true.
+	// and release is paired with every allow that admitted.
 	inFlight int
 }
 
-// allow reports whether the caller may start a probe against provider now, and reserves the slot.
-// A reservation is taken even when the probe later fails: the interval measures attempts, not wins.
-// The per-process concurrency cap is checked here too, so an unbounded burst is refused before it
-// contends with real traffic on the provider queues.
-func (a *probeAdmission) allow(caller string, provider schemas.ModelProvider) bool {
+// allow reserves a probe slot, or reports why the caller may not start one now: the empty string
+// means admitted. A reservation is taken even when the probe later fails (the interval measures
+// attempts, not wins), and the per-process concurrency cap is checked here too, so an unbounded
+// burst is refused before it contends with real traffic on the provider queues. The refusal says
+// which waitable bound it hit and for how long: a probe writes no log line, so the response is the
+// only place an operator can learn that a probe is coming and roughly when to retry. It never
+// names the failing provider or the exact remaining backoff — the deployment's provider health is
+// not something every refused caller gets to read off the endpoint.
+func (a *probeAdmission) allow(provider schemas.ModelProvider) string {
 	now := time.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if until, blocked := a.blockedUntil[provider]; blocked {
 		if now.Before(until) {
-			return false
+			return "a probe against this provider is backing off; wait before probing again"
 		}
 		delete(a.blockedUntil, provider)
 	}
-	if last, ok := a.lastStart[caller]; ok && now.Sub(last) < probeMinInterval {
-		return false
+	if wait := probeMinInterval - now.Sub(a.lastStart); wait > 0 {
+		return fmt.Sprintf("a probe was started less than %s ago; wait before starting another", probeMinInterval)
 	}
 	if a.inFlight >= probeMaxInFlight {
-		return false
+		return "too many probes are already running; wait for one to finish"
 	}
-	if a.lastStart == nil {
-		a.lastStart = make(map[string]time.Time, 8)
-	}
-	a.lastStart[caller] = now
+	a.lastStart = now
 	a.inFlight++
-	return true
+	return ""
 }
 
 // release frees the in-flight slot allow reserved. It is paired with every allow that returned
@@ -604,10 +637,10 @@ func isProviderThrottle(probeErr *schemas.BifrostError) bool {
 	return status == fasthttp.StatusTooManyRequests || status >= fasthttp.StatusInternalServerError
 }
 
-// probePrincipal names the caller for admission accounting: the authenticated session when there is
-// one, the peer address otherwise (an auth-disabled deployment has no other identity to count). The
-// token is hashed rather than kept, so the admission map holds no credential for the process
-// lifetime.
+// probePrincipal names the caller for the audit record: the authenticated session when there is
+// one, the peer address otherwise (an auth-disabled deployment has no other identity to record).
+// The token is hashed rather than kept, so the audit line holds no credential. The admission bound
+// is global, so the principal plays no part in whether a probe is admitted.
 func probePrincipal(ctx *fasthttp.RequestCtx) string {
 	if token, ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string); ok && token != "" {
 		sum := sha256.Sum256([]byte(token))
@@ -638,21 +671,26 @@ func (h *ProviderHandler) providerKeyLiteral(provider schemas.ModelProvider, key
 }
 
 // probeCredentialPattern matches provider-key-shaped literals a provider may echo back in an error
-// (`sk-...` for OpenAI/Anthropic/OpenRouter, the other vendors' `ak-`/`key-`/`hf_` prefixes, and long
-// unbroken hex/base64 blobs). It is the last line of defence: the pinned path seeds the request's
-// redaction map with the exact literal, and the unpinned path relies on the pipeline to, but a
-// provider that refuses before key selection completes can still echo the credential into a verdict
-// with no redaction map present.
+// (`sk-...` for OpenAI/Anthropic/OpenRouter, the other vendors' `ak-`/`key-`/`hf_` prefixes, `gsk_`
+// for Google, and long unbroken hex/base64 blobs). It is the last line of defence: the pinned path
+// seeds the request's redaction map with the exact literal, and the unpinned path relies on the
+// pipeline to, but a provider that refuses before key selection completes can still echo the
+// credential into a verdict with no redaction map present.
 //
-// The bare-alpha run is bounded by a digit or a mixed case, because model and artifact names are long
-// too (`openai/gpt-4o-mini-2024-07-18`, base64 image ids) and redacting those would hide the answer
-// the operator pressed the button to get. A secret is a key shape, not merely a long word.
+// The prefix arm is anchored on a word boundary so a `sk_` fragment inside a longer word (for
+// example `desk_x...`, or a partial match inside `gsk_`) is not sliced out of the middle, and its
+// tail accepts any length: a real key is short as often as it is long, so a seven-character tail is
+// still a credential. The bare-alpha run is bounded by a digit or a mixed case, because model and
+// artifact names are long too (`openai/gpt-4o-mini-2024-07-18`, base64 image ids) and redacting
+// those would hide the answer the operator pressed the button to get. A secret is a key shape, not
+// merely a long word.
 var probeCredentialPattern = regexp.MustCompile(
-	`(?i)(?:sk|ak|key|hf|pk)[-_][A-Za-z0-9_\-]{8,}|\b[0-9a-fA-F]{32,}\b|\b[A-Za-z0-9+/_\-]{40,}={0,2}\b`,
+	`(?i)\b(?:sk|ak|key|hf|pk|gsk)[-_][A-Za-z0-9_\-]{1,}|\b[0-9a-fA-F]{32,}\b|\b[A-Za-z0-9+/_\-]{40,}={0,2}\b`,
 )
 
-// probeMixedAlnumPattern narrows the base64 arm the same way: a long run of only letters (a hyphenated
-// model name, a word chain) is not a credential, while one carrying digits or mixed case is.
+// probeMixedAlnumPattern narrows the base64 arm the same way: a long run of only letters (a
+// hyphenated model name, a word chain) is not a credential, while one carrying digits or mixed case
+// is.
 var probeMixedAlnumPattern = regexp.MustCompile(`\d|[a-z][A-Z]|[A-Z][a-z]`)
 
 // redactProbeError passes a provider error through the request's redaction data, so a message that
@@ -665,9 +703,6 @@ func redactProbeError(ctx *schemas.BifrostContext, text string) string {
 		if len(data.LiteralReplacements.Input) > 0 {
 			text = schemas.ApplyLiteralReplacements(text, data.LiteralReplacements.Input)
 		}
-		if len(data.ReversibleMappings.Output) > 0 {
-			text = schemas.ApplyLiteralReplacements(text, data.ReversibleMappings.Output)
-		}
 	}
 	return probeCredentialPattern.ReplaceAllStringFunc(text, func(match string) string {
 		if !probeMixedAlnumPattern.MatchString(match) {
@@ -675,4 +710,34 @@ func redactProbeError(ctx *schemas.BifrostContext, text string) string {
 		}
 		return "[REDACTED]"
 	})
+}
+
+// seedProbeCredentialLiterals folds the credential-shaped literals a provider error quotes into the
+// request's input replacements, so the same literals the verdict scrubs by shape are also scrubbed
+// from the trace. The verdict's shape scrub runs over the body only; the trace's error attribute is
+// exported to every connector and is scrubbed by literal replacement, so without seeding here a key
+// the literal map never learned about (a provider that failed over to a second key, or refused
+// before selection) would leave the body clean but the trace leaking.
+func seedProbeCredentialLiterals(ctx *schemas.BifrostContext, text string) {
+	if ctx == nil || text == "" {
+		return
+	}
+	seeded := map[string]string{}
+	probeCredentialPattern.ReplaceAllStringFunc(text, func(match string) string {
+		if probeMixedAlnumPattern.MatchString(match) {
+			seeded[match] = "[REDACTED]"
+		}
+		return match
+	})
+	if len(seeded) == 0 {
+		return
+	}
+	data, _ := schemas.RedactionDataFromContext(ctx)
+	if data.LiteralReplacements.Input == nil {
+		data.LiteralReplacements.Input = map[string]string{}
+	}
+	for literal, placeholder := range seeded {
+		data.LiteralReplacements.Input[literal] = placeholder
+	}
+	schemas.SetRedactionDataOnContext(ctx, data)
 }

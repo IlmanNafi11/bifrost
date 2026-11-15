@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTestModelMutation } from "@/lib/store/apis/providersApi";
+import { getErrorMessage } from "@/lib/store/apis/baseApi";
 import { isModeProbeable, formatModelProbeToast } from "@/lib/utils/modelProbe";
 
 interface ModelTestButtonProps {
@@ -48,9 +49,10 @@ export function ModelTestButton({
 			const { title, description, variant } = formatModelProbeToast(result);
 			(variant === "success" ? toast.success : toast.error)(title, { description });
 		} catch (error) {
-			// A transport failure (network, 4xx before the probe runs) has no verdict
-			// body; the toast still names the row it belongs to.
-			toast.error(t("modelTest.failedTitle", { label }), { description: stringifyProbeError(error) });
+			// A transport failure (network, 4xx before the probe runs) has no verdict body. Its RTK
+			// shape nests the server message under data.error, so the shared extractor reads it;
+			// stringifying the wrapper would show "[object Object]" instead of the refusal.
+			toast.error(t("modelTest.failedTitle", { label }), { description: getErrorMessage(error) });
 		}
 	};
 
@@ -83,18 +85,4 @@ export function ModelTestButton({
 			</Tooltip>
 		</TooltipProvider>
 	);
-}
-
-function stringifyProbeError(error: unknown): string {
-	if (typeof error === "string") return error;
-	if (error && typeof error === "object") {
-		const record = error as Record<string, unknown>;
-		if (typeof record.error === "string") return record.error;
-		if (typeof record.message === "string") return record.message;
-		if (record.error && typeof record.error === "object") {
-			const inner = record.error as Record<string, unknown>;
-			if (typeof inner.message === "string") return inner.message;
-		}
-	}
-	return String(error);
 }
