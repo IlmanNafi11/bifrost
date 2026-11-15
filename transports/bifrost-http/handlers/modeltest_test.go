@@ -94,6 +94,12 @@ func probeCatalog(tb testing.TB, rows map[string]string) *modelcatalog.ModelCata
 	return modelcatalog.NewTestCatalogWithDatasheet(ds)
 }
 
+// throttleErr builds the provider refusal shape a throttled probe carries: a status code alone is
+// what isProviderThrottle keys on.
+func throttleErr(status int) *schemas.BifrostError {
+	return &schemas.BifrostError{StatusCode: &status}
+}
+
 // probeTraceRecorder counts the traces a probe opens and completes, which is what makes the probe's
 // invisibility safe: a trace nobody completes sits in the store until the TTL sweep warns about it.
 type probeTraceRecorder struct {
@@ -767,8 +773,8 @@ func TestModelProbe_AdmissionBoundsOnePrincipal(t *testing.T) {
 // failures continue and resets on the first probe that reaches the provider.
 func TestModelProbe_AdmissionBacksOffAThrottledProvider(t *testing.T) {
 	var a probeAdmission
-	throttled := &ModelTestResponse{TimedOut: true}
-	a.record(schemas.OpenAI, throttled, nil)
+	throttled := throttleErr(fasthttp.StatusTooManyRequests)
+	a.record(schemas.OpenAI, &ModelTestResponse{}, throttled)
 	now := time.Now()
 	a.mu.Lock()
 	until := a.blockedUntil[schemas.OpenAI]
@@ -791,11 +797,11 @@ func TestModelProbe_AdmissionBackoffDoublesAndCaps(t *testing.T) {
 		defer a.mu.Unlock()
 		return time.Until(a.blockedUntil[schemas.OpenAI])
 	}
-	throttled := &ModelTestResponse{TimedOut: true}
+	throttled := throttleErr(fasthttp.StatusTooManyRequests)
 	failures := 0
 	previous := time.Duration(0)
 	for range 6 {
-		a.record(schemas.OpenAI, throttled, nil)
+		a.record(schemas.OpenAI, &ModelTestResponse{}, throttled)
 		failures++
 		got := window()
 		if failures > 1 && previous < probeMaxBackoff-5*time.Second {
@@ -805,6 +811,17 @@ func TestModelProbe_AdmissionBackoffDoublesAndCaps(t *testing.T) {
 		previous = got
 	}
 	assert.Less(t, window(), probeMaxBackoff+time.Second, "the cap bounds the window however many failures accumulate")
+}
+
+// A probe timeout is a latency measurement, not a provider outage: the operator's next click on a
+// slow-but-working model must be admitted, not fenced for a growing window. Backoff is reserved for
+// a provider that answered 429/5xx and asked to be left alone.
+func TestModelProbe_TimeoutDoesNotBackOffTheProvider(t *testing.T) {
+	var a probeAdmission
+	a.record(schemas.OpenAI, &ModelTestResponse{TimedOut: true}, nil)
+
+	assert.Empty(t, a.allow(schemas.OpenAI), "a timed-out probe leaves the provider immediately re-probeable")
+	assert.Empty(t, a.failures, "a timeout records no failure to widen")
 }
 
 // A provider error message can quote the credential it rejected. The verdict is shown in the
@@ -919,9 +936,10 @@ func TestModelProbe_AdmissionNamesTheBoundItHit(t *testing.T) {
 	assert.Contains(t, capped.allow(schemas.OpenAI), "too many probes")
 
 	var backedOff probeAdmission
-	backedOff.record(schemas.OpenAI, &ModelTestResponse{TimedOut: true}, nil)
+	backedOff.record(schemas.OpenAI, &ModelTestResponse{}, throttleErr(fasthttp.StatusTooManyRequests))
 	refusal := backedOff.allow(schemas.OpenAI)
 	assert.Contains(t, refusal, "backing off", "the backoff refusal is a provider wait, not a busy process")
+	assert.Contains(t, refusal, "30s", "the refusal names the window, so the operator knows roughly when to retry")
 }
 
 // The backoff is keyed by provider, so one provider that is throttled must not fence the others:
@@ -929,20 +947,19 @@ func TestModelProbe_AdmissionNamesTheBoundItHit(t *testing.T) {
 // provider's bound.
 func TestModelProbe_AdmissionBackoffIsPerProvider(t *testing.T) {
 	var a probeAdmission
-	a.record(schemas.OpenAI, &ModelTestResponse{TimedOut: true}, nil)
+	a.record(schemas.OpenAI, &ModelTestResponse{}, throttleErr(fasthttp.StatusTooManyRequests))
 
 	assert.Contains(t, a.allow(schemas.OpenAI), "backing off", "the throttled provider is refused")
 	assert.Empty(t, a.allow(schemas.Anthropic), "a different, healthy provider is still probeable")
 }
 
-// The backoff window ends exactly at blockedUntil, so a probe at that instant is admitted rather
-// than refused for a window that has already elapsed: now.Before(until) is the only refusal.
+// A backoff that has already elapsed admits the probe: now.Before(until) is the only refusal, so
+// the instant the window ends (and anything after it) is a fresh start.
 func TestModelProbe_AdmissionBackoffExpiresAtTheBoundary(t *testing.T) {
 	var a probeAdmission
-	now := time.Now()
-	a.blockedUntil = map[schemas.ModelProvider]time.Time{schemas.OpenAI: now}
+	a.blockedUntil = map[schemas.ModelProvider]time.Time{schemas.OpenAI: time.Now().Add(-time.Nanosecond)}
 
-	assert.Empty(t, a.allow(schemas.OpenAI), "a backoff that has exactly elapsed admits the probe")
+	assert.Empty(t, a.allow(schemas.OpenAI), "a backoff that has elapsed admits the probe")
 }
 
 // The mutex in allow is load-bearing, and only concurrency makes that falsifiable: with it removed
