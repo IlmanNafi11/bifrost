@@ -49,6 +49,12 @@ func (h *ProxyPoolHandler) RegisterRoutes(r *router.Router, middlewares ...schem
 	r.GET("/api/proxy-pools/{id}", wrap(h.getPool))
 	r.PUT("/api/proxy-pools/{id}", wrap(h.updatePool))
 	r.DELETE("/api/proxy-pools/{id}", wrap(h.deletePool))
+	r.POST("/api/proxy-pools/{id}/import", wrap(h.importProxies))
+	r.POST("/api/proxy-pools/{id}/probe", wrap(h.probeProxies))
+	r.POST("/api/proxy-pools/{id}/disable", wrap(h.setProxiesEnabled(false)))
+	r.POST("/api/proxy-pools/{id}/delete", wrap(h.deleteProxies))
+	r.POST("/api/proxy-pools/{id}/bind", wrap(h.bindKeys))
+	r.POST("/api/proxy-pools/{id}/unbind", wrap(h.unbindKeys))
 }
 
 func (h *ProxyPoolHandler) storeAvailable(ctx *fasthttp.RequestCtx) bool {
@@ -181,4 +187,258 @@ func (h *ProxyPoolHandler) deletePool(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, map[string]any{"status": "success"})
+}
+
+// proxyPoolIDsRequest is the body shared by the disable, delete and probe
+// subresources. An empty or nil list means "all proxies in the pool" for probe
+// and is rejected for the mutating endpoints.
+type proxyPoolIDsRequest struct {
+	IDs []string `json:"ids"`
+}
+
+// validProxyMechanisms mirrors the six mechanisms the selection manager knows.
+// Rejecting an unknown value here keeps a typo from silently becoming a no-op.
+var validProxyMechanisms = map[schemas.ProxyMechanism]bool{
+	schemas.ProxyRoundRobin:       true,
+	schemas.ProxyRandom:           true,
+	schemas.ProxyWeighted:         true,
+	schemas.ProxyLeastConnections: true,
+	schemas.ProxyFallback:         true,
+	schemas.ProxyStickySession:    true,
+}
+
+func (h *ProxyPoolHandler) importProxies(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	pool := h.poolFromCtx(ctx)
+	if pool == nil {
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	proxies, err := schemas.ParseImport(body.Text)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy import: %v", err))
+		return
+	}
+	if len(proxies) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "No proxies found in import text")
+		return
+	}
+	if err := h.store.ImportProxies(ctx, pool.ID, proxies); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to import proxies: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"imported": len(proxies)})
+}
+
+// proxyProbeResult is one proxy's probe outcome. A failed probe is reported as
+// dead with its error rather than failing the whole batch.
+type proxyProbeResult struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	LatencyMs int64  `json:"latency_ms"`
+	EgressIP  string `json:"egress_ip,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (h *ProxyPoolHandler) probeProxies(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	pool := h.poolFromCtx(ctx)
+	if pool == nil {
+		return
+	}
+	var body struct {
+		IDs  []string               `json:"ids"`
+		Mode schemas.ProxyProbeMode `json:"mode"`
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	mode := body.Mode
+	if mode == "" {
+		mode = schemas.ProxyProbeModeA
+	}
+	if mode != schemas.ProxyProbeModeA && mode != schemas.ProxyProbeModeB {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid probe mode %q", mode))
+		return
+	}
+	targets, ok := h.selectProxies(ctx, pool, body.IDs, true)
+	if !ok {
+		return
+	}
+	results := make([]proxyProbeResult, 0, len(targets))
+	for _, proxy := range targets {
+		status, latencyMs, egressIP, err := h.prober.Probe(ctx, proxy, mode)
+		if err != nil {
+			status = proxypool.ProxyStatusDead
+		}
+		if err := h.store.SetProxyStatus(ctx, proxy.ID, status, latencyMs, egressIP); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to record probe status: %v", err))
+			return
+		}
+		result := proxyProbeResult{ID: proxy.ID, Status: status, LatencyMs: latencyMs, EgressIP: egressIP}
+		if err != nil {
+			result.Error = err.Error()
+		}
+		results = append(results, result)
+	}
+	SendJSON(ctx, struct {
+		Results []proxyProbeResult `json:"results"`
+	}{Results: results})
+}
+
+// selectProxies resolves an optional id list against a pool. Unknown ids are a
+// 400: a typo must never be silently skipped. When allowAll is false an empty
+// list is also a 400 because disable/delete need an explicit target.
+func (h *ProxyPoolHandler) selectProxies(ctx *fasthttp.RequestCtx, pool *schemas.ProxyPool, ids []string, allowAll bool) ([]schemas.PoolProxy, bool) {
+	if len(ids) == 0 {
+		if allowAll {
+			return pool.Proxies, true
+		}
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one proxy id is required")
+		return nil, false
+	}
+	byID := make(map[string]schemas.PoolProxy, len(pool.Proxies))
+	for _, proxy := range pool.Proxies {
+		byID[proxy.ID] = proxy
+	}
+	out := make([]schemas.PoolProxy, 0, len(ids))
+	for _, id := range ids {
+		proxy, ok := byID[id]
+		if !ok {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Proxy %q is not in pool %q", id, pool.ID))
+			return nil, false
+		}
+		out = append(out, proxy)
+	}
+	return out, true
+}
+
+func (h *ProxyPoolHandler) setProxiesEnabled(enabled bool) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if !h.storeAvailable(ctx) {
+			return
+		}
+		pool := h.poolFromCtx(ctx)
+		if pool == nil {
+			return
+		}
+		var body proxyPoolIDsRequest
+		if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+			return
+		}
+		ids, ok := h.selectProxies(ctx, pool, body.IDs, false)
+		if !ok {
+			return
+		}
+		proxyIDs := make([]string, 0, len(ids))
+		for _, proxy := range ids {
+			proxyIDs = append(proxyIDs, proxy.ID)
+		}
+		if err := h.store.SetProxiesEnabled(ctx, pool.ID, proxyIDs, enabled); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to update proxies: %v", err))
+			return
+		}
+		SendJSON(ctx, map[string]any{"updated": len(proxyIDs)})
+	}
+}
+
+func (h *ProxyPoolHandler) deleteProxies(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	pool := h.poolFromCtx(ctx)
+	if pool == nil {
+		return
+	}
+	var body proxyPoolIDsRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	ids, ok := h.selectProxies(ctx, pool, body.IDs, false)
+	if !ok {
+		return
+	}
+	proxyIDs := make([]string, 0, len(ids))
+	for _, proxy := range ids {
+		proxyIDs = append(proxyIDs, proxy.ID)
+	}
+	if err := h.store.DeleteProxies(ctx, pool.ID, proxyIDs); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete proxies: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"deleted": len(proxyIDs)})
+}
+
+// proxyPoolKeysRequest is the body of the bind and unbind subresources.
+type proxyPoolKeysRequest struct {
+	KeyIDs    []string               `json:"key_ids"`
+	Mechanism schemas.ProxyMechanism `json:"mechanism"`
+}
+
+func (h *ProxyPoolHandler) readKeysRequest(ctx *fasthttp.RequestCtx) (proxyPoolKeysRequest, bool) {
+	var body proxyPoolKeysRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return body, false
+	}
+	if len(body.KeyIDs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one key id is required")
+		return body, false
+	}
+	return body, true
+}
+
+func (h *ProxyPoolHandler) bindKeys(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	pool := h.poolFromCtx(ctx)
+	if pool == nil {
+		return
+	}
+	body, ok := h.readKeysRequest(ctx)
+	if !ok {
+		return
+	}
+	if !validProxyMechanisms[body.Mechanism] {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid proxy mechanism %q", body.Mechanism))
+		return
+	}
+	if err := h.store.BindKeys(ctx, pool.ID, body.KeyIDs, body.Mechanism); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to bind keys: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"bound": len(body.KeyIDs)})
+}
+
+func (h *ProxyPoolHandler) unbindKeys(ctx *fasthttp.RequestCtx) {
+	if !h.storeAvailable(ctx) {
+		return
+	}
+	pool := h.poolFromCtx(ctx)
+	if pool == nil {
+		return
+	}
+	body, ok := h.readKeysRequest(ctx)
+	if !ok {
+		return
+	}
+	if err := h.store.UnbindKeys(ctx, pool.ID, body.KeyIDs); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to unbind keys: %v", err))
+		return
+	}
+	SendJSON(ctx, map[string]any{"unbound": len(body.KeyIDs)})
 }
