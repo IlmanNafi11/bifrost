@@ -70,7 +70,7 @@ func (provider *OpenAIProvider) CreateLiveWebRTCSession(ctx *schemas.BifrostCont
 	}
 	req.SetBody(body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -131,7 +131,7 @@ func (provider *OpenAIProvider) LiveSessionContent(ctx *schemas.BifrostContext, 
 		req.Header.Set(k, v)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.streamingClient, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.streamingClientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)

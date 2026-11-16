@@ -90,7 +90,7 @@ func (provider *OpenAIProvider) executeResponsesLifecycleUnary(
 	// Lifecycle JSON is always consumed in-process (no transport streaming). Skip
 	// PrepareResponseStreaming so large-response threshold mode never leaves the body
 	// on a stream-only path that finalizeOpenAIResponse would treat as unsupported here.
-	activeClient := provider.client
+	activeClient := provider.clientFor(ctx)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
 	req.SetRequestURI(fullURL)
@@ -226,7 +226,7 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 	}
 
 	// Use streaming-aware client when large payload optimization is active.
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClientFor(ctx), resp)
 
 	startTime := time.Now()
 	err := providerUtils.DoStreamingRequest(ctx, activeClient, httpReq, resp)
