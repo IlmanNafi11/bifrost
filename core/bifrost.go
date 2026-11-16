@@ -60,6 +60,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/vllm"
 	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
+	"github.com/maximhq/bifrost/core/proxypool"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/valyala/fasthttp"
@@ -163,6 +164,7 @@ type Bifrost struct {
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
 	kvStore                    schemas.KVStore                       // optional KV store for session stickiness (nil = disabled)
 	sessionAffinity            schemas.SessionAffinity               // decides which key a session stays on; never nil after Init
+	proxyPoolManager           *proxypool.Manager                    // per-key proxy selection; nil when no ProxyPoolStore was configured
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -324,6 +326,9 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		mcpPerUserDiscoveryStore: config.MCPPerUserDiscoveryStore,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
+	if config.ProxyPoolStore != nil {
+		bifrost.proxyPoolManager = proxypool.NewManager(config.ProxyPoolStore, config.KVStore, config.Logger)
+	}
 	if config.LLMPlugins == nil {
 		config.LLMPlugins = make([]schemas.LLMPlugin, 0)
 	}
@@ -8225,17 +8230,68 @@ func applyRawCaptureSignals(ctx *schemas.BifrostContext, config *schemas.Provide
 	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
 }
 
-// applyProviderProxySignal publishes the serving provider's proxy config on ctx so
+// applyProviderProxySignal publishes the attempt's resolved egress proxy on ctx so
 // fetches made on the provider's behalf from deep inside its converters (image and
 // document URLs, via providerUtils.FetchAndEncodeURL) leave through the same proxy
-// as its inference traffic. Written on every attempt, nil included: a fallback to a
-// provider with a different proxy, or none, must never inherit the previous one.
-func applyProviderProxySignal(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
-	var proxyConfig *schemas.ProxyConfig
-	if config != nil {
-		proxyConfig = config.ProxyConfig
-	}
+// as its inference traffic — a key-bound pool proxy when one was picked, otherwise
+// the serving provider's proxy. Written on every attempt, nil included: a fallback
+// to a provider with a different proxy, or none, must never inherit the previous one.
+func applyProviderProxySignal(ctx *schemas.BifrostContext, proxyConfig *schemas.ProxyConfig) {
 	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
+}
+
+// proxyPoolExhaustedType is the wire-level error type for a bound pool that
+// cannot serve an attempt. It is terminal: the provider proxy must never be a
+// silent fallback for a key that asked for a pool.
+const proxyPoolExhaustedType = "proxy_pool_exhausted"
+
+// proxyForAttempt resolves the egress proxy for one attempt. Precedence is
+// key-bound pool → provider proxy (the global proxy remains the provider's own
+// fallback, downstream). With no store configured the only work is a nil check,
+// so unbound keys keep the pre-existing allocation profile. A lookup failure
+// fails closed for the same reason an exhausted pool does: without a confirmed
+// binding, dialing through the provider proxy could leak the real egress IP.
+func (bifrost *Bifrost) proxyForAttempt(ctx *schemas.BifrostContext, k schemas.Key, config *schemas.ProviderConfig) (*schemas.ProxyConfig, *schemas.BifrostError) {
+	if manager := bifrost.proxyPoolManager; manager != nil {
+		picked, err := manager.PickProxy(ctx, k.ID)
+		if err != nil {
+			return nil, proxyPoolExhaustedError(err)
+		}
+		if picked != nil {
+			return picked, nil
+		}
+	}
+	if config == nil {
+		return nil, nil
+	}
+	return config.ProxyConfig, nil
+}
+
+// applyProxyForAttempt is the single entry point used by both the streaming and
+// unary attempt closures: it publishes the resolved proxy on ctx (nil included,
+// so a stale proxy from an earlier attempt never survives) and surfaces a
+// terminal error before any provider dial happens.
+func (bifrost *Bifrost) applyProxyForAttempt(ctx *schemas.BifrostContext, k schemas.Key, config *schemas.ProviderConfig) *schemas.BifrostError {
+	proxy, proxyErr := bifrost.proxyForAttempt(ctx, k, config)
+	applyProviderProxySignal(ctx, proxy)
+	return proxyErr
+}
+
+func proxyPoolExhaustedError(cause error) *schemas.BifrostError {
+	message := proxypool.ErrPoolExhausted.Error()
+	if cause != nil && !errors.Is(cause, proxypool.ErrPoolExhausted) {
+		message = cause.Error()
+	}
+	return &schemas.BifrostError{
+		IsBifrostError: true, // terminal: stop retries inside this provider
+		StatusCode:     schemas.Ptr(503),
+		Type:           schemas.Ptr(proxyPoolExhaustedType),
+		AllowFallbacks: schemas.Ptr(false), // terminal: do not hop to another provider's proxy
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr(proxyPoolExhaustedType),
+			Message: message,
+		},
+	}
 }
 
 // requestWorker handles incoming requests from the queue for a specific provider.
@@ -8552,7 +8608,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, &req.BifrostRequest, baseProvider, resolvedModel)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
-				applyProviderProxySignal(req.Context, config)
+				if proxyErr := bifrost.applyProxyForAttempt(req.Context, k, config); proxyErr != nil {
+					return nil, proxyErr
+				}
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
@@ -8695,7 +8753,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, &req.BifrostRequest, baseProvider, resolvedModel)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
-				applyProviderProxySignal(req.Context, config)
+				if proxyErr := bifrost.applyProxyForAttempt(req.Context, k, config); proxyErr != nil {
+					return nil, proxyErr
+				}
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				if injectedTools != nil {
 					return bifrost.runInjectedTools(provider, config, req, k, injectedTools)

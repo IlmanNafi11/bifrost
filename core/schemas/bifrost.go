@@ -42,6 +42,7 @@ type BifrostConfig struct {
 	KeySelector              KeySelector     // Custom key selector function
 	KeyPoolFilter            KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
 	KVStore                  KVStore         // shared KV store for clustering/session stickiness; nil = disabled
+	ProxyPoolStore           ProxyPoolStore  // storage for per-key proxy pools and bindings; nil = per-key proxy selection disabled
 	SessionAffinity          SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog             ModelInfoProvider
 	MCPSharedDiscoveryStore  MCPDiscoveryStore

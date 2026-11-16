@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/proxypool"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/stretchr/testify/assert"
@@ -4813,12 +4814,12 @@ func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	vertexProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.9:3128")}
 
-	applyProviderProxySignal(ctx, &schemas.ProviderConfig{ProxyConfig: vertexProxy})
+	applyProviderProxySignal(ctx, vertexProxy)
 	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != vertexProxy {
 		t.Fatalf("primary attempt: proxy = %v, want the Vertex proxy", got)
 	}
 
-	applyProviderProxySignal(ctx, &schemas.ProviderConfig{})
+	applyProviderProxySignal(ctx, nil)
 	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
 		t.Fatalf("fallback attempt: proxy = %v, want nil (the fallback has no proxy)", got)
 	}
@@ -4829,6 +4830,280 @@ func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
 	if got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig); got != nil {
 		t.Fatal("a plugin write must not be able to redirect provider fetches through another proxy")
 	}
+}
+
+// proxyPoolTestStore is a minimal in-memory ProxyPoolStore for request-wiring tests.
+type proxyPoolTestStore struct {
+	mu         sync.Mutex
+	pools      map[string]schemas.ProxyPool
+	binding    map[string]schemas.ProxyPoolBinding
+	bindingErr error
+}
+
+func newProxyPoolTestStore(pools ...schemas.ProxyPool) *proxyPoolTestStore {
+	s := &proxyPoolTestStore{
+		pools:   make(map[string]schemas.ProxyPool),
+		binding: make(map[string]schemas.ProxyPoolBinding),
+	}
+	for _, p := range pools {
+		s.pools[p.ID] = p
+	}
+	return s
+}
+
+func (s *proxyPoolTestStore) bind(keyID, poolID string, mechanism schemas.ProxyMechanism) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.binding[keyID] = schemas.ProxyPoolBinding{PoolID: poolID, KeyID: keyID, Mechanism: mechanism}
+}
+
+func (s *proxyPoolTestStore) ListPools(context.Context) ([]schemas.ProxyPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]schemas.ProxyPool, 0, len(s.pools))
+	for _, p := range s.pools {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (s *proxyPoolTestStore) GetPool(_ context.Context, id string) (*schemas.ProxyPool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pools[id]
+	if !ok {
+		return nil, nil
+	}
+	return &p, nil
+}
+
+func (s *proxyPoolTestStore) CreatePool(context.Context, *schemas.ProxyPool) error { return nil }
+func (s *proxyPoolTestStore) UpdatePool(context.Context, *schemas.ProxyPool) error { return nil }
+func (s *proxyPoolTestStore) DeletePool(context.Context, string) error             { return nil }
+func (s *proxyPoolTestStore) ImportProxies(context.Context, string, []schemas.PoolProxy) error {
+	return nil
+}
+func (s *proxyPoolTestStore) DeleteProxies(context.Context, string, []string) error { return nil }
+func (s *proxyPoolTestStore) SetProxiesEnabled(context.Context, string, []string, bool) error {
+	return nil
+}
+func (s *proxyPoolTestStore) SetProxyStatus(context.Context, string, string, int64, string) error {
+	return nil
+}
+func (s *proxyPoolTestStore) BindKeys(context.Context, string, []string, schemas.ProxyMechanism) error {
+	return nil
+}
+func (s *proxyPoolTestStore) UnbindKeys(context.Context, string, []string) error { return nil }
+func (s *proxyPoolTestStore) ListBindings(context.Context) ([]schemas.ProxyPoolBinding, error) {
+	return nil, nil
+}
+func (s *proxyPoolTestStore) GetBinding(_ context.Context, keyID string) (*schemas.ProxyPoolBinding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bindingErr != nil {
+		return nil, s.bindingErr
+	}
+	b, ok := s.binding[keyID]
+	if !ok {
+		return nil, nil
+	}
+	return &b, nil
+}
+func (s *proxyPoolTestStore) DeleteKeyBindings(context.Context, string) error { return nil }
+
+func testProxyPoolBifrost(store schemas.ProxyPoolStore) *Bifrost {
+	return &Bifrost{proxyPoolManager: proxypool.NewManager(store, nil, nil)}
+}
+
+// TestProxyForAttempt_UnboundKeyUsesProviderProxy pins the common case: with no
+// pool configured, or a key with no binding, the provider proxy is returned
+// unchanged (the pre-existing behavior and allocation profile).
+func TestProxyForAttempt_UnboundKeyUsesProviderProxy(t *testing.T) {
+	providerProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.1:3128")}
+	config := &schemas.ProviderConfig{ProxyConfig: providerProxy}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	got, proxyErr := (&Bifrost{}).proxyForAttempt(ctx, schemas.Key{ID: "key-unbound"}, config)
+	require.Nil(t, proxyErr)
+	require.Same(t, providerProxy, got)
+
+	got, proxyErr = testProxyPoolBifrost(newProxyPoolTestStore()).proxyForAttempt(ctx, schemas.Key{ID: "key-unbound"}, config)
+	require.Nil(t, proxyErr)
+	require.Same(t, providerProxy, got)
+}
+
+// TestProxyForAttempt_BoundKeyUsesPoolProxy pins precedence: a bound key
+// egresses through the pool's picked proxy, not the provider proxy.
+func TestProxyForAttempt_BoundKeyUsesPoolProxy(t *testing.T) {
+	poolProxy := schemas.PoolProxy{
+		ID: "proxy-1", PoolID: "pool-1", Type: schemas.Socks5Proxy,
+		URL: "socks5://127.0.0.1:1080", Enabled: true, Weight: 1,
+		Status: proxypool.ProxyStatusAlive,
+	}
+	store := newProxyPoolTestStore(schemas.ProxyPool{
+		ID: "pool-1", Name: "pool", Proxies: []schemas.PoolProxy{poolProxy},
+	})
+	store.bind("key-bound", "pool-1", schemas.ProxyRoundRobin)
+
+	providerProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.1:3128")}
+	got, proxyErr := testProxyPoolBifrost(store).proxyForAttempt(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{ID: "key-bound"},
+		&schemas.ProviderConfig{ProxyConfig: providerProxy},
+	)
+	require.Nil(t, proxyErr)
+	require.NotNil(t, got)
+	require.NotSame(t, providerProxy, got)
+	require.Equal(t, schemas.Socks5Proxy, got.Type)
+	require.Equal(t, poolProxy.URL, got.URL.GetValue())
+}
+
+// TestProxyForAttempt_ExhaustedPoolReturnsProxyPoolExhausted503 pins the
+// fail-loud contract: a bound key whose pool cannot serve gets a terminal 503,
+// never the provider/global proxy (which would leak the real egress IP).
+func TestProxyForAttempt_ExhaustedPoolReturnsProxyPoolExhausted503(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		proxies []schemas.PoolProxy
+	}{
+		{"empty pool", nil},
+		{"disabled proxy", []schemas.PoolProxy{{ID: "p1", PoolID: "pool-1", Type: schemas.HTTPProxy, URL: "http://127.0.0.1:8080", Enabled: false}}},
+		{"dead proxy", []schemas.PoolProxy{{ID: "p1", PoolID: "pool-1", Type: schemas.HTTPProxy, URL: "http://127.0.0.1:8080", Enabled: true, Status: proxypool.ProxyStatusDead}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newProxyPoolTestStore(schemas.ProxyPool{ID: "pool-1", Proxies: tt.proxies})
+			store.bind("key-bound", "pool-1", schemas.ProxyRoundRobin)
+			providerProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.1:3128")}
+
+			got, proxyErr := testProxyPoolBifrost(store).proxyForAttempt(
+				schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				schemas.Key{ID: "key-bound"},
+				&schemas.ProviderConfig{ProxyConfig: providerProxy},
+			)
+			require.Nil(t, got)
+			require.NotNil(t, proxyErr)
+			require.Equal(t, 503, proxyErr.EffectiveHTTPStatus())
+			require.NotNil(t, proxyErr.Type)
+			require.Equal(t, "proxy_pool_exhausted", *proxyErr.Type)
+			require.True(t, proxyErr.IsBifrostError, "must be terminal: no retries inside this provider")
+			require.NotNil(t, proxyErr.AllowFallbacks)
+			require.False(t, *proxyErr.AllowFallbacks, "must not fall back to another provider's proxy")
+		})
+	}
+}
+
+// TestProxyForAttempt_StoreErrorFailsClosed: an unreadable binding store cannot
+// confirm the key is unbound, so falling through would leak the provider proxy.
+func TestProxyForAttempt_StoreErrorFailsClosed(t *testing.T) {
+	store := newProxyPoolTestStore()
+	store.bindingErr = fmt.Errorf("binding store unavailable")
+	providerProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.1:3128")}
+
+	got, proxyErr := testProxyPoolBifrost(store).proxyForAttempt(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{ID: "key-unbound"},
+		&schemas.ProviderConfig{ProxyConfig: providerProxy},
+	)
+	require.Nil(t, got)
+	require.NotNil(t, proxyErr)
+	require.Equal(t, 503, proxyErr.EffectiveHTTPStatus())
+	require.NotNil(t, proxyErr.Type)
+	require.Equal(t, "proxy_pool_exhausted", *proxyErr.Type)
+}
+
+// TestApplyProviderProxySignal_UsesProxyForAttempt pins that the shared seam both
+// request paths call publishes the picked proxy and surfaces the terminal error.
+func TestApplyProviderProxySignal_UsesProxyForAttempt(t *testing.T) {
+	poolProxy := schemas.PoolProxy{
+		ID: "proxy-1", PoolID: "pool-1", Type: schemas.HTTPProxy,
+		URL: "http://127.0.0.1:8080", Enabled: true, Status: proxypool.ProxyStatusAlive,
+	}
+	store := newProxyPoolTestStore(schemas.ProxyPool{ID: "pool-1", Proxies: []schemas.PoolProxy{poolProxy}})
+	store.bind("key-bound", "pool-1", schemas.ProxyRoundRobin)
+	client := testProxyPoolBifrost(store)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	providerProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.1:3128")}
+	proxyErr := client.applyProxyForAttempt(ctx, schemas.Key{ID: "key-bound"}, &schemas.ProviderConfig{ProxyConfig: providerProxy})
+	require.Nil(t, proxyErr)
+	got, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig)
+	require.NotNil(t, got)
+	require.Equal(t, poolProxy.URL, got.URL.GetValue())
+
+	// The same helper must clear the ctx signal on the terminal path — a stale
+	// proxy from an earlier attempt must never drive a provider dial.
+	emptyStore := newProxyPoolTestStore(schemas.ProxyPool{ID: "pool-1"})
+	emptyStore.bind("key-bound", "pool-1", schemas.ProxyRoundRobin)
+	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	proxyErr = testProxyPoolBifrost(emptyStore).applyProxyForAttempt(ctx2, schemas.Key{ID: "key-bound"}, &schemas.ProviderConfig{ProxyConfig: providerProxy})
+	require.NotNil(t, proxyErr)
+	got, _ = ctx2.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig)
+	require.Nil(t, got)
+}
+
+// TestProxyForAttempt_TerminalErrorStopsRetries pins the retry-loop behavior of
+// the 503: even with retries configured, an exhausted pool is returned to the
+// caller without dialing the provider (which would leak the real egress IP).
+func TestProxyForAttempt_TerminalErrorStopsRetries(t *testing.T) {
+	store := newProxyPoolTestStore(schemas.ProxyPool{ID: "pool-1"})
+	store.bind("key-bound", "pool-1", schemas.ProxyRoundRobin)
+	client := testProxyPoolBifrost(store)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	config := &schemas.ProviderConfig{ProxyConfig: &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://10.0.0.1:3128"),
+	}}
+	calls := 0
+	_, proxyErr := executeRequestWithRetries(
+		ctx,
+		createTestConfig(3, 0, 0),
+		func(k schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			if err := client.applyProxyForAttempt(ctx, k, config); err != nil {
+				return "", err
+			}
+			return "unexpected provider dial", nil
+		},
+		func(map[string]bool, map[string]bool) (schemas.Key, error) {
+			return schemas.Key{ID: "key-bound"}, nil
+		},
+		schemas.ChatCompletionRequest, schemas.OpenAI, "model", nil,
+		NewDefaultLogger(schemas.LogLevelError),
+	)
+	require.Equal(t, 1, calls, "an exhausted pool must not be retried")
+	require.NotNil(t, proxyErr)
+	require.Equal(t, 503, proxyErr.EffectiveHTTPStatus())
+	require.NotNil(t, proxyErr.Type)
+	require.Equal(t, "proxy_pool_exhausted", *proxyErr.Type)
+}
+
+// TestInit_ProxyPoolStoreBuildsManager pins the BifrostConfig → Bifrost wiring.
+func TestInit_ProxyPoolStoreBuildsManager(t *testing.T) {
+	poolProxy := schemas.PoolProxy{
+		ID: "proxy-1", PoolID: "pool-1", Type: schemas.HTTPProxy,
+		URL: "http://127.0.0.1:8080", Enabled: true, Status: proxypool.ProxyStatusAlive,
+	}
+	store := newProxyPoolTestStore(schemas.ProxyPool{ID: "pool-1", Proxies: []schemas.PoolProxy{poolProxy}})
+	store.bind("key-bound", "pool-1", schemas.ProxyRoundRobin)
+
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account:        NewMockAccount(),
+		Logger:         NewDefaultLogger(schemas.LogLevelError),
+		ProxyPoolStore: store,
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	require.NotNil(t, client.proxyPoolManager)
+
+	got, proxyErr := client.proxyForAttempt(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{ID: "key-bound"},
+		&schemas.ProviderConfig{},
+	)
+	require.Nil(t, proxyErr)
+	require.NotNil(t, got)
+	require.Equal(t, poolProxy.URL, got.URL.GetValue())
 }
 
 // https://github.com/maximhq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
