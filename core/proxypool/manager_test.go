@@ -3,6 +3,10 @@ package proxypool
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -494,5 +498,177 @@ func TestPickProxy_LeastConnections(t *testing.T) {
 	third := mustPick(t, m, ctx, "key")
 	if got := pickedURL(t, third); got != "http://127.0.0.1:18080" {
 		t.Fatalf("third pick = %s, want p1 after releasing it", got)
+	}
+}
+
+// startForwardProxy is a real HTTP forward proxy on loopback: it answers
+// CONNECT with a tunnel to the target and forwards absolute-URI requests.
+func startForwardProxy(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			target, err := net.DialTimeout("tcp", r.Host, 2*time.Second)
+			if err != nil {
+				http.Error(w, "dial failed", http.StatusBadGateway)
+				return
+			}
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				target.Close()
+				return
+			}
+			client, buf, err := hijacker.Hijack()
+			if err != nil {
+				target.Close()
+				return
+			}
+			_, _ = client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+			go func() {
+				defer target.Close()
+				_, _ = io.Copy(target, buf)
+			}()
+			defer client.Close()
+			_, _ = io.Copy(client, target)
+			return
+		}
+		resp, err := http.DefaultTransport.RoundTrip(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		for k, values := range resp.Header {
+			for _, v := range values {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	})}
+	go func() { _ = srv.Serve(listener) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return listener.Addr().String()
+}
+
+func TestProbe_ModeAConnectAndModeBEchoIP(t *testing.T) {
+	const egressIP = "203.0.113.7"
+	echo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, egressIP+"\n")
+	}))
+	defer echo.Close()
+
+	proxyAddr := startForwardProxy(t)
+	p := schemas.PoolProxy{ID: "p1", Type: schemas.HTTPProxy, URL: proxyAddr, Enabled: true, Weight: 1}
+	m := testManager(newMemPoolStore(), newTTLKV())
+	m.SetEchoIPEndpoint(echo.URL)
+
+	status, latency, ip, err := m.Probe(context.Background(), p, schemas.ProxyProbeModeA)
+	if err != nil {
+		t.Fatalf("mode A probe: %v", err)
+	}
+	if status != ProxyStatusAlive {
+		t.Fatalf("mode A status = %s, want alive", status)
+	}
+	if latency < 0 {
+		t.Fatalf("mode A latency = %d", latency)
+	}
+	if ip != "" {
+		t.Fatalf("mode A egress ip = %q, want empty", ip)
+	}
+
+	status, latency, ip, err = m.Probe(context.Background(), p, schemas.ProxyProbeModeB)
+	if err != nil {
+		t.Fatalf("mode B probe: %v", err)
+	}
+	if status != ProxyStatusAlive {
+		t.Fatalf("mode B status = %s, want alive", status)
+	}
+	if latency <= 0 {
+		t.Fatalf("mode B latency = %d, want > 0", latency)
+	}
+	if ip != egressIP {
+		t.Fatalf("mode B egress ip = %q, want %s", ip, egressIP)
+	}
+}
+
+func TestProbe_FailedConnectMarksDead(t *testing.T) {
+	p := schemas.PoolProxy{ID: "p1", Type: schemas.HTTPProxy, URL: "127.0.0.1:1", Enabled: true}
+	m := testManager(newMemPoolStore(), newTTLKV())
+
+	status, _, _, err := m.Probe(context.Background(), p, schemas.ProxyProbeModeA)
+	if err == nil {
+		t.Fatal("expected a CONNECT failure on a closed port")
+	}
+	if status != ProxyStatusDead {
+		t.Fatalf("status = %s, want dead", status)
+	}
+}
+
+func TestProbe_ModeBFailureMarksDead(t *testing.T) {
+	proxyAddr := startForwardProxy(t)
+	echo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "not-an-ip")
+	}))
+	defer echo.Close()
+
+	p := schemas.PoolProxy{ID: "p1", Type: schemas.HTTPProxy, URL: proxyAddr, Enabled: true}
+	m := testManager(newMemPoolStore(), newTTLKV())
+	m.SetEchoIPEndpoint(echo.URL)
+
+	status, _, _, err := m.Probe(context.Background(), p, schemas.ProxyProbeModeB)
+	if err == nil {
+		t.Fatal("expected an error on a malformed echo response")
+	}
+	if status != ProxyStatusDead {
+		t.Fatalf("status = %s, want dead", status)
+	}
+}
+
+func TestProxyURLFor_BareSchemeAndCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    schemas.PoolProxy
+		want string
+	}{
+		{
+			name: "bare http",
+			p:    schemas.PoolProxy{Type: schemas.HTTPProxy, URL: "127.0.0.1:8080"},
+			want: "http://127.0.0.1:8080",
+		},
+		{
+			name: "bare socks5 with credentials",
+			p: schemas.PoolProxy{
+				Type:     schemas.Socks5Proxy,
+				URL:      "127.0.0.1:1080",
+				Username: "svc",
+				Password: schemas.NewSecretVar("s3cret"),
+			},
+			want: "socks5://svc:s3cret@127.0.0.1:1080",
+		},
+		{
+			name: "explicit scheme preserved",
+			p:    schemas.PoolProxy{Type: schemas.HTTPProxy, URL: "http://127.0.0.1:8080"},
+			want: "http://127.0.0.1:8080",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := proxyURLFor(tc.p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("proxyURLFor = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultProbeEchoEndpointConfigured(t *testing.T) {
+	if DefaultProbeEchoEndpoint == "" {
+		t.Fatal("default mode-B echo endpoint must be configured")
 	}
 }

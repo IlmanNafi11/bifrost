@@ -9,14 +9,25 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"math/rand"
+	"net"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// DefaultProbeEchoEndpoint is the mode-B echo-IP endpoint. It is a builder
+// choice, overridable per manager with SetEchoIPEndpoint; a probe that cannot
+// reach it or gets a non-IP answer is recorded as dead, never "assume alive".
+const DefaultProbeEchoEndpoint = "https://api.ipify.org"
 
 // Proxy status values stored on a PoolProxy by the probe lifecycle.
 const (
@@ -45,6 +56,8 @@ type Manager struct {
 	logger schemas.Logger
 	state  *stateStore
 
+	echoIPURL string // mode-B echo endpoint; immutable after construction
+
 	mu       sync.Mutex
 	rng      *rand.Rand
 	cursors  map[string]uint64 // pool id -> round-robin cursor
@@ -58,13 +71,14 @@ func NewManager(store schemas.ProxyPoolStore, kv schemas.KVStore, logger schemas
 		logger = discardLogger{}
 	}
 	return &Manager{
-		store:    store,
-		kv:       kv,
-		logger:   logger,
-		state:    newStateStore(kv),
-		rng:      rand.New(rand.NewSource(time.Now().UnixNano())),
-		cursors:  make(map[string]uint64),
-		inFlight: make(map[string]int64),
+		store:     store,
+		kv:        kv,
+		logger:    logger,
+		state:     newStateStore(kv),
+		echoIPURL: DefaultProbeEchoEndpoint,
+		rng:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		cursors:   make(map[string]uint64),
+		inFlight:  make(map[string]int64),
 	}
 }
 
@@ -180,6 +194,127 @@ func (m *Manager) nextCursor(poolID string) uint64 {
 	c := m.cursors[poolID]
 	m.cursors[poolID] = c + 1
 	return c
+}
+
+// SetEchoIPEndpoint overrides the endpoint used by mode-B probes to read the
+// visible egress IP. It must be called before the manager serves requests.
+func (m *Manager) SetEchoIPEndpoint(rawURL string) {
+	if strings.TrimSpace(rawURL) != "" {
+		m.echoIPURL = strings.TrimSpace(rawURL)
+	}
+}
+
+// Probe verifies one proxy. Mode A completes a CONNECT handshake through it;
+// mode B repeats the handshake and fetches the echo endpoint to read the egress
+// IP. Both return "dead" on any failure — a probe never silently assumes a
+// proxy is alive. The caller persists the returned status, latency and IP with
+// SetProxyStatus.
+func (m *Manager) Probe(ctx context.Context, p schemas.PoolProxy, mode schemas.ProxyProbeMode) (status string, latencyMs int64, egressIP string, err error) {
+	proxyURL, err := proxyURLFor(p)
+	if err != nil {
+		return ProxyStatusDead, 0, "", err
+	}
+	target, err := probeTargetAddr(m.echoIPURL)
+	if err != nil {
+		return ProxyStatusDead, 0, "", err
+	}
+
+	start := time.Now()
+	dialCtx, cancel := context.WithTimeout(ctx, network.ProxyHandshakeTimeout)
+	defer cancel()
+	conn, err := network.DialViaProxy(dialCtx, proxyURL, target)
+	if err != nil {
+		return ProxyStatusDead, 0, "", fmt.Errorf("proxy connect: %w", err)
+	}
+	_ = conn.Close()
+
+	if mode == schemas.ProxyProbeModeA {
+		return ProxyStatusAlive, time.Since(start).Milliseconds(), "", nil
+	}
+
+	ip, err := m.fetchEgressIP(ctx, proxyURL)
+	if err != nil {
+		return ProxyStatusDead, time.Since(start).Milliseconds(), "", err
+	}
+	return ProxyStatusAlive, time.Since(start).Milliseconds(), ip, nil
+}
+
+// proxyURLFor turns a stored proxy into a URL with the scheme implied by its
+// type and credentials attached, ready for network.DialViaProxy.
+func proxyURLFor(p schemas.PoolProxy) (*url.URL, error) {
+	scheme := "http"
+	switch p.Type {
+	case schemas.Socks5Proxy:
+		scheme = "socks5"
+	case schemas.HTTPProxy:
+		scheme = "http"
+	}
+	raw := p.URL
+	if !strings.Contains(raw, "://") {
+		raw = scheme + "://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy url: %w", err)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("proxy url has no host")
+	}
+	if p.Username != "" {
+		u.User = url.UserPassword(p.Username, p.Password.GetValue())
+	}
+	return u, nil
+}
+
+// probeTargetAddr is the host:port the CONNECT handshake aims at: the echo
+// endpoint's own authority, defaulting the port by scheme.
+func probeTargetAddr(echoURL string) (string, error) {
+	u, err := url.Parse(echoURL)
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid echo endpoint %q", echoURL)
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if u.Scheme == "https" {
+			port = "443"
+		}
+	}
+	return net.JoinHostPort(u.Hostname(), port), nil
+}
+
+// fetchEgressIP fetches the echo endpoint through the proxy and reads the IP
+// from its body. A non-IP answer is an error so the probe is recorded dead.
+func (m *Manager) fetchEgressIP(ctx context.Context, proxyURL *url.URL) (string, error) {
+	tr := &http.Transport{
+		DialContext: func(dialCtx context.Context, _, addr string) (net.Conn, error) {
+			return network.DialViaProxy(dialCtx, proxyURL, addr)
+		},
+	}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Transport: tr, Timeout: network.ProxyHandshakeTimeout}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.echoIPURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build echo request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch echo endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("echo endpoint status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64))
+	if err != nil {
+		return "", fmt.Errorf("read echo response: %w", err)
+	}
+	ip := strings.TrimSpace(string(body))
+	if net.ParseIP(ip) == nil {
+		return "", fmt.Errorf("echo endpoint returned a non-IP: %q", ip)
+	}
+	return ip, nil
 }
 
 // parseIntState reads a counter written by a local store or returned as JSON
