@@ -77,11 +77,12 @@
   - Files: `tests/e2e/api/collections/provider-harness.json`
   - Depends on: Task 5, Task 8
 
-- [ ] **Task 11: Benchmark + docs**
+- [x] **Task 11: Benchmark + docs**
   - Acceptance: `BenchmarkPickProxy_Bound`/`_Unbound` with `-benchmem`; Mintlify page (menu, import format, six mechanisms, probe A/B, precedence, `proxy_pool_exhausted`).
   - Verify: `cd core && go test ./proxypool/ -bench . -benchmem -run '^$'`; docs build
-  - Files: `core/proxypool/manager_bench_test.go`, `docs/...`
+  - Files: `core/proxypool/manager_bench_test.go`, `docs/features/proxy-pools.mdx`, `docs/docs.json`
   - Depends on: Task 4
+  - Measured (AMD EPYC, go1.27.4): `BenchmarkPickProxy_Bound` ~1134 ns/op, 860 B/op, 11 allocs/op; `BenchmarkPickProxy_Unbound` ~2.5 ns/op, 0 B/op, 0 allocs/op. Unbound (common) path stays allocation-free. No "before" baseline exists — benchmarks are new; numbers are recorded as the starting ratchet.
 
 ## Checkpoint: Complete
 - [x] `cd transports && go test ./bifrost-http/handlers/ -run TestProxyPools -v` passes

@@ -47,7 +47,7 @@ Source of truth: `SPEC.md` (approved) + `docs/superpowers/specs/2026-11-16-proxy
 - [x] Task 8: HTTP handler + OpenAPI + config schema
 - [x] Task 9: UI — Proxy Pool menu + per-key editor dropdown
 - [ ] Task 10: Provider-harness regression cases
-- [ ] Task 11: Benchmark + docs
+- [x] Task 11: Benchmark + docs
 
 ### Checkpoint: Complete
 - [x] `cd transports && go test ./bifrost-http/handlers/ -run TestProxyPools -v` passes
