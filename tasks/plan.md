@@ -45,7 +45,7 @@ Source of truth: `SPEC.md` (approved) + `docs/superpowers/specs/2026-11-16-proxy
 ### Phase 3: API + UI + harness + docs
 
 - [x] Task 8: HTTP handler + OpenAPI + config schema
-- [ ] Task 9: UI — Proxy Pool menu + per-key editor dropdown
+- [x] Task 9: UI — Proxy Pool menu + per-key editor dropdown
 - [ ] Task 10: Provider-harness regression cases
 - [ ] Task 11: Benchmark + docs
 

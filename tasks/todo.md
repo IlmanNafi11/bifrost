@@ -65,7 +65,7 @@
   - Files: `transports/bifrost-http/handlers/proxypools.go`, `.../proxypools_test.go`, `.../config.go`, `transports/config.schema.json`, `docs/openapi/openapi.json`
   - Depends on: Task 3, Task 4 (probe)
 
-- [ ] **Task 9: UI — Proxy Pool menu + per-key editor dropdown**
+- [x] **Task 9: UI — Proxy Pool menu + per-key editor dropdown**
   - Acceptance: nav entry `data-testid="proxy-pool-nav"`; pool list/detail/import/probe action bar; per-key `proxy: none | <pool> + mechanism`; new `proxypool` i18n namespace in all 11 locales.
   - Verify: `cd ui && npm run i18n:check && npm run build && npx vitest run` → PASS
   - Files: `ui/app/workspace/config/proxy-pools/*`, `ui/lib/store/apis/proxyPoolsApi.ts`, `ui/lib/types/proxyPools.ts`, `ui/components/navigation/navItems.tsx`, `ui/app/workspace/providers/views/providerKeyForm.tsx`, `ui/lib/types/schemas.ts`, `ui/locales/*/proxypool.json`, `ui/lib/i18n/resources.ts`
