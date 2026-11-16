@@ -71,7 +71,7 @@
   - Files: `ui/app/workspace/config/proxy-pools/*`, `ui/lib/store/apis/proxyPoolsApi.ts`, `ui/lib/types/proxyPools.ts`, `ui/components/navigation/navItems.tsx`, `ui/app/workspace/providers/views/providerKeyForm.tsx`, `ui/lib/types/schemas.ts`, `ui/locales/*/proxypool.json`, `ui/lib/i18n/resources.ts`
   - Depends on: Task 8
 
-- [ ] **Task 10: Provider-harness regression cases**
+- [x] **Task 10: Provider-harness regression cases**
   - Acceptance: cases for exhausted-pool 503 (exact, no leak), `/v1/responses` + `/v1/chat/completions` with pool bound, import/probe/disable/delete write-through; surgical insert only.
   - Verify: `node tests/e2e/api/runners/augment-provider-harness.mjs ... && node tests/e2e/api/runners/filter-collection.mjs ... --feature "proxy pool"` → exit 0
   - Files: `tests/e2e/api/collections/provider-harness.json`
