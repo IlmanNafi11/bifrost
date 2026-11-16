@@ -57,6 +57,45 @@ All confirmed in conversation with the owner (`bansos`):
 - `sticky_session` keys on the **existing** Bifrost session affinity
   (`BifrostContextKeySelectedKeyID`-style) — without a session it falls back to
   `round_robin`.
+- **Deployment model (hybrid, owner's pick)**: health/cooldown state and
+  sticky-session pins live in the shared `KVStore` (survive restart and
+  multi-replica); the round_robin cursor and least_connections in-flight
+  counters stay per-instance (best-effort distribution, documented). KV cost is
+  paid only on bound-request paths; unbound stays zero-allocation.
+- **Single source of truth for a binding**: the `proxy_pool_bindings` table.
+  The per-key `proxy_pool_id`/`proxy_pool_mechanism` fields on the key API are a
+  read projection of that table (and the write path for it), never a second
+  storage location, so no two stores can diverge.
+- **Pool selection discipline for ALL mechanisms** (round_robin, random,
+  weighted, sticky included, not just fallback): candidates are always filtered
+  to `enabled=true` and not `status=dead` and not in cooldown; a pick after
+  filtering that finds nothing counts as "pool cannot serve" and fails loudly
+  (see below). Fallback additionally advances within a request's attempts when
+  the current proxy fails; other mechanisms re-pick per attempt.
+- **"Pool cannot serve" is hard**: a bound key whose pool is empty, all-
+  disabled, all-dead, or all-in-cooldown aborts with a new error type
+  `proxy_pool_exhausted` (HTTP 503) before dialing. It never falls back to the
+  provider/global proxy (a silent IP leak) unless the pool itself is empty and
+  the owner explicitly opted the binding into provider-proxy fallback at bind
+  time (off by default).
+- **Binding lifecycle**: deleting a pool auto-unbinds every key bound to it;
+  deleting an upstream key cascades its bindings. Bindings reference the string
+  `schemas.Key.ID` (`config_keys.key_id`), held across config reloads by the
+  existing name-fallback key-continuity logic in the store (numeric
+  auto-increment `TableKey.ID` is storage-local and not stable across reloads).
+- **Cooldown specifics**: a transport failure through a proxy (dial error,
+  timeout, connection reset) increments its consecutive-failure counter; a
+  permanent per-proxy error (407 proxy auth, forbidden) marks the proxy
+  `dead` instead of cooling down; threshold 3 consecutive failures → cooldown
+  60s; any success resets the counter. A mode-B probe result also writes the
+  proxy's `status` (alive/dead) and refresh its egress IP.
+- **Wire-visible failure contract**: new Bifrost error type
+  `proxy_pool_exhausted` (503), unit-tested and pinned in a provider-harness
+  case on every reaching route (per AGENTS.md Testing); streaming path surfaces
+  it as stream setup error, non-streaming as the request error.
+
+Decisions marked "(builder's call)" were made by the author after the
+independent builder check, within its "settle it yourself" remit.
 
 ## Goals, Non-Goals, Anti-Goals
 
@@ -135,26 +174,30 @@ list pools for key.
 
 - `ProxyPoolManager` (`core/pool/` or `core/proxypool/`): loads bindings,
   caches per-pool proxy slices; **selection per mechanism**:
-  - round_robin: atomic cursor per pool.
+  - round_robin: atomic cursor per pool (per-instance).
   - random: `math/rand` (locked) per pick.
   - weighted: weighted random across `weight`.
-  - least_connections: per-proxy in-flight counter (atomic), pick min; broken
-    ties by round_robin cursor.
+  - least_connections: per-proxy in-flight counter (atomic, per-instance), pick
+    min; ties broken by round_robin cursor.
   - fallback: ordered; pick first non-cooldown, non-dead proxy; try next within
     a request's attempts when the current one fails.
-  - sticky: session ID from ctx (existing affinity) → pinned proxy; fallback to
+  - sticky: session ID from ctx (existing affinity) → pinned proxy held in the
+    shared `KVStore` (via the existing `SessionStateKey` machinery); fallback to
     round_robin without a session.
-- Cooldown: consecutive failures counter incremented on attempt failure through
-  that proxy; at threshold, skip for `cooldown_until`, then retry. Reset on
-  success.
+- Cooldown/health state: consecutive-failure counters and `cooldown_until`
+  stamps live in the shared `KVStore` (hybrid model), so cooldown and sticky
+  pins survive restart and are consistent across replicas. Threshold 3
+  consecutive failures → cooldown 60s; a success resets. 407/forbidden marks
+  `dead` (no cooldown).
 - Resolve at the point key is selected (`keyProvider` closure in the worker,
   `core/bifrost.go:8413-8477`); when the selected key has a binding, compute the
   pool's picked proxy and publish on ctx:
   - extend/reuse `BifrostContextKeyProviderProxyConfig` (per-attempt via the
     existing `applyProviderProxySignal` call at `8555`/`8698` — for a bound key
     this now carries the picked proxy instead of (fallback to) the provider
-    proxy).
-- Request-path cost for unbound keys: a nil/empty check only.
+    proxy). A pool that cannot serve returns `proxy_pool_exhausted` (503).
+- Request-path cost for unbound keys: a nil/empty check only; bound keys pay one
+  KV read for cooldown/sticky state, one map load, and one selection.
 
 ### Provider dialing with per-proxy cache (core/providers)
 
@@ -183,9 +226,11 @@ list pools for key.
   marks inactive; delete removes rows).
 - `POST /api/proxy-pools/{id}/bind` / `/unbind` — `{key_ids: [...]}`,
   mechanism.
-Provider config / key APIs gain per-key `proxy_pool_id` + `proxy_pool_mechanism`
-(upstream key editor).
-`transports/config.schema.json` updated (source of truth) before docs.
+Provider config / key APIs expose per-key `proxy_pool_id` + `proxy_pool_mechanism`
+as a read projection of `proxy_pool_bindings` (the key editor's write path goes
+through `/bind`/`/unbind`; the field is not a second store).
+`transports/config.schema.json` updated (source of truth) for the new pool and
+binding surface before docs.
 
 ### UI (ui/)
 
@@ -228,8 +273,9 @@ format, mechanisms, probe modes, precedence; examples validated against
   string, capped at 128 per provider; entries freed by LRU eviction).
 - **Memory retained**: the per-provider client cache (≤128 clients × connection
   pools) and per-pool proxy slices in the manager, keyed by pool id, rebuilt on
-  pool mutation; cooldown counters and in-flight counts are small atomics on
-  proxy rows.
+  pool mutation; the round_robin cursor and least_connections in-flight counts
+  are small per-instance atomics. Cooldown counters and sticky pins are KV
+  entries (bounded, keyed by `SessionStateKey`/proxy id) — not heap-retained.
 - **Benchmarks**: a `Benchmark*` on the bound-key select path with `-benchmem`
   in the new manager test file (before/after allocs and ns recorded in the PR
   body); unbound path not regressed (nil-check only) — stated in PR.
