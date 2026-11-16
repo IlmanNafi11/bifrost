@@ -5475,6 +5475,61 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "proxy_pool_mechanism": {
+      "type": "string",
+      "description": "Selection mechanism for a proxy pool binding. Reference shape for the API-managed proxy pool asset; pools are stored in the config store and managed through /api/proxy-pools, not loaded from config.json.",
+      "enum": ["round_robin", "random", "weighted", "least_connections", "fallback", "sticky_session"]
+    },
+    "proxy_pool_proxy": {
+      "type": "object",
+      "description": "One proxy in a pool. Passwords are encrypted at rest and never returned by the API. Reference shape; not loaded from config.json.",
+      "properties": {
+        "id": { "type": "string" },
+        "pool_id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "description": "Dialer scheme for this proxy.",
+          "enum": ["http", "socks5"]
+        },
+        "url": { "type": "string", "description": "Host and port, optionally prefixed with its scheme." },
+        "username": { "type": "string" },
+        "weight": { "type": "number", "default": 1 },
+        "enabled": { "type": "boolean" },
+        "status": {
+          "type": "string",
+          "description": "Last probe result; dead proxies are skipped by every mechanism.",
+          "enum": ["unknown", "alive", "dead"]
+        },
+        "latency_ms": { "type": "integer" },
+        "egress_ip": { "type": "string" },
+        "last_tested_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "pool_id", "type", "url"]
+    },
+    "proxy_pool": {
+      "type": "object",
+      "description": "A reusable set of proxies bound to upstream provider keys. Reference shape; pools live in the config store and are managed through /api/proxy-pools.",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "proxies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/proxy_pool_proxy" }
+        }
+      },
+      "required": ["id", "name"]
+    },
+    "proxy_pool_binding": {
+      "type": "object",
+      "description": "Binds one upstream provider key to a pool and its selection mechanism. The bindings table is the single source of truth; the per-key proxy_pool_id/proxy_pool_mechanism fields are a read-only projection. Reference shape; not loaded from config.json.",
+      "properties": {
+        "pool_id": { "type": "string" },
+        "key_id": { "type": "string", "description": "Upstream provider key id, not a Bifrost virtual key." },
+        "mechanism": { "$ref": "#/$defs/proxy_pool_mechanism" }
+      },
+      "required": ["pool_id", "key_id", "mechanism"]
+    },
     "identity_source": {
       "type": "object",
       "description": "Where a federated key gets the OIDC identity token it exchanges. Shared by every provider that supports workload identity federation.",
