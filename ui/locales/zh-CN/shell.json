@@ -67,6 +67,7 @@
 		"security": "安全",
 		"warp": "Warp",
 		"proxy": "代理",
+		"proxyPools": "代理池",
 		"apiKeys": "API 密钥",
 		"performanceTuning": "性能调优",
 		"featureFlags": "功能开关",

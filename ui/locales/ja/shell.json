@@ -67,6 +67,7 @@
 		"security": "セキュリティ",
 		"warp": "Warp",
 		"proxy": "プロキシ",
+		"proxyPools": "プロキシプール",
 		"apiKeys": "API キー",
 		"performanceTuning": "パフォーマンス調整",
 		"featureFlags": "フィーチャーフラグ",

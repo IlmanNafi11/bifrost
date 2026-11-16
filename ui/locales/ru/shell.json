@@ -67,6 +67,7 @@
 		"security": "Безопасность",
 		"warp": "Warp",
 		"proxy": "Прокси",
+		"proxyPools": "Пулы прокси",
 		"apiKeys": "API-ключи",
 		"performanceTuning": "Настройка производительности",
 		"featureFlags": "Флаги функций",

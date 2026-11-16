@@ -67,6 +67,7 @@
 		"security": "보안",
 		"warp": "Warp",
 		"proxy": "프록시",
+		"proxyPools": "프록시 풀",
 		"apiKeys": "API 키",
 		"performanceTuning": "성능 튜닝",
 		"featureFlags": "기능 플래그",

@@ -65,6 +65,7 @@
 		"security": "Sécurité",
 		"warp": "Warp",
 		"proxy": "Proxy",
+		"proxyPools": "Pools de proxy",
 		"apiKeys": "Clés API",
 		"performanceTuning": "Réglage des performances",
 		"featureFlags": "Indicateurs de fonctionnalités",

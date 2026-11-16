@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ENTERPRISE_NAMESPACES, enterpriseResources } from "../../app/_fallbacks/enterprise/lib/i18n/resources";
 
-const OSS_NAMESPACES = ["common", "shell", "login", "observability", "models", "mcp", "governance", "config"];
+const OSS_NAMESPACES = ["common", "shell", "login", "observability", "models", "mcp", "governance", "config", "proxypool"];
 const LOCALES_DIR = path.resolve(__dirname, "../../locales");
 const otherLocales = fs
 	.readdirSync(LOCALES_DIR, { withFileTypes: true })
