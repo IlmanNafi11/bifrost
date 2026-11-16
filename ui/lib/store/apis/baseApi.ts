@@ -243,6 +243,7 @@ export const baseApi = createApi({
 		"AgentLogs",
 		"Relays",
 		"RelayLogs",
+		"ProxyPools",
 	],
 	endpoints: () => ({}),
 });

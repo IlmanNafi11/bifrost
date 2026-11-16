@@ -23,6 +23,7 @@ export * from "./oauth2SessionsApi";
 export * from "./pluginsApi";
 export * from "./relaysApi";
 export * from "./providersApi";
+export * from "./proxyPoolsApi";
 export * from "./promptsApi";
 export * from "./sessionApi";
 export * from "./skillsApi";

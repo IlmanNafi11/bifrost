@@ -3,6 +3,7 @@ import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
 import { isRedacted } from "@/lib/utils/validation";
+import { PROXY_MECHANISMS } from "./proxyPools";
 import { z } from "zod";
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
@@ -951,6 +952,15 @@ export const modelProviderKeySchema = z
 			path: ["value"],
 		},
 	);
+
+// Per-key proxy pool selection. An empty pool_id means "no pool" (unbound);
+// the binding itself is written through the pool bind/unbind API, not the key payload.
+export const proxyMechanismSchema = z.enum(PROXY_MECHANISMS);
+
+export const proxyBindingFormSchema = z.object({
+	pool_id: z.string(),
+	mechanism: proxyMechanismSchema,
+});
 
 // Network config schema
 export const networkConfigSchema = z
@@ -2263,6 +2273,8 @@ export type SecretVar = z.infer<typeof secretVarSchema>;
 export type AuthProofOfControl = z.infer<typeof authProofOfControlSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
 export type ModelProviderKeySchema = z.infer<typeof modelProviderKeySchema>;
+export type ProxyMechanismSchema = z.infer<typeof proxyMechanismSchema>;
+export type ProxyBindingFormSchema = z.infer<typeof proxyBindingFormSchema>;
 export type NetworkConfigSchema = z.infer<typeof networkConfigSchema>;
 export type NetworkFormConfigSchema = z.infer<typeof networkFormConfigSchema>;
 export type ProxyFormConfigSchema = z.infer<typeof proxyFormConfigSchema>;

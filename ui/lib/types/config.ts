@@ -1,6 +1,7 @@
 // Configuration types that match the Go backend structures
 
 import { KnownProvidersNames } from "@/lib/constants/logs";
+import { ProxyMechanism } from "./proxyPools";
 import { SecretVar } from "./schemas";
 
 // Known provider names - all supported standard providers
@@ -462,6 +463,8 @@ export interface ModelProviderKey {
 	oauth_key_config?: OAuthKeyConfig;
 	anthropic_key_config?: AnthropicKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
+	proxy_pool_id?: string; // Read-only projection of the key's pool binding
+	proxy_pool_mechanism?: ProxyMechanism; // Read-only projection of the key's pool binding
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
