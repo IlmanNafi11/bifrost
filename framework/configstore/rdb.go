@@ -1416,7 +1416,6 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 
 	var txDB *gorm.DB
 	txDB = tx[0]
-	// Find the existing provider
 	var dbProvider tables.TableProvider
 	if err := dbForUpdate(txDB.WithContext(ctx)).Where("name = ?", string(provider)).First(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1424,9 +1423,22 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		}
 		return err
 	}
-
 	if err := s.cleanupVirtualKeyProviderConfigsForDeletedProvider(ctx, txDB, dbProvider.Name); err != nil {
 		return err
+	}
+	// Collect the keys' upstream IDs before the provider delete removes them, so
+	// their proxy pool bindings can be dropped in the same transaction.
+	var keyIDs []string
+	if err := txDB.WithContext(ctx).Model(&tables.TableKey{}).
+		Where("provider_id = ?", dbProvider.ID).
+		Pluck("key_id", &keyIDs).Error; err != nil {
+		return err
+	}
+	if len(keyIDs) > 0 {
+		if err := txDB.WithContext(ctx).Where("provider_key_id IN ?", keyIDs).
+			Delete(&tables.TableProxyPoolBinding{}).Error; err != nil {
+			return err
+		}
 	}
 
 	// Store the budget and rate limit IDs before deleting
@@ -1440,7 +1452,6 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 		}
 		return err
 	}
-
 	// Delete the budget if it exists
 	if budgetID != nil {
 		if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
@@ -1694,6 +1705,13 @@ func (s *RDBConfigStore) DeleteProviderKey(ctx context.Context, provider schemas
 		Table("governance_virtual_key_provider_config_keys").
 		Where("table_key_id = ?", dbKey.ID).
 		Delete(nil).Error; err != nil {
+		return err
+	}
+	// The upstream key's proxy pool binding dies with the key so a recreated
+	// key (same id) can never resurrect a stale binding.
+	if err := txDB.WithContext(ctx).
+		Where("provider_key_id = ?", keyID).
+		Delete(&tables.TableProxyPoolBinding{}).Error; err != nil {
 		return err
 	}
 

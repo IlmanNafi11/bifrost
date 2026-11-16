@@ -313,6 +313,22 @@ type ConfigStore interface {
 	GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	UpdateStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error
 
+	// Proxy pool CRUD
+	ListPools(ctx context.Context) ([]schemas.ProxyPool, error)
+	GetPool(ctx context.Context, id string) (*schemas.ProxyPool, error)
+	CreatePool(ctx context.Context, p *schemas.ProxyPool) error
+	UpdatePool(ctx context.Context, p *schemas.ProxyPool) error
+	DeletePool(ctx context.Context, id string) error
+	ImportProxies(ctx context.Context, poolID string, proxies []schemas.PoolProxy) error
+	DeleteProxies(ctx context.Context, poolID string, ids []string) error
+	SetProxiesEnabled(ctx context.Context, poolID string, ids []string, enabled bool) error
+	SetProxyStatus(ctx context.Context, id string, status string, latencyMs int64, egressIP string) error
+	BindKeys(ctx context.Context, poolID string, keyIDs []string, mechanism schemas.ProxyMechanism) error
+	UnbindKeys(ctx context.Context, poolID string, keyIDs []string) error
+	ListBindings(ctx context.Context) ([]schemas.ProxyPoolBinding, error)
+	GetBinding(ctx context.Context, keyID string) (*schemas.ProxyPoolBinding, error)
+	DeleteKeyBindings(ctx context.Context, keyID string) error
+
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
