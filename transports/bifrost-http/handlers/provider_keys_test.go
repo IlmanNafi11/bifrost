@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -19,6 +20,82 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+// proxyPoolBindingStore supplies just the binding lookup the key read
+// projection needs; the rest of the config store interface is unused.
+type proxyPoolBindingStore struct {
+	configstore.ConfigStore
+	binding *schemas.ProxyPoolBinding
+	err     error
+}
+
+func (s *proxyPoolBindingStore) GetBinding(context.Context, string) (*schemas.ProxyPoolBinding, error) {
+	return s.binding, s.err
+}
+
+func TestProviderKeyReadIncludesProxyPoolProjection(t *testing.T) {
+	provider := schemas.OpenAI
+	key := schemas.Key{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test")}
+	newHandler := func(store configstore.ConfigStore) *ProviderHandler {
+		return &ProviderHandler{
+			inMemoryStore: &lib.Config{
+				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+					provider: {Keys: []schemas.Key{key}},
+				},
+			},
+			dbStore: store,
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		store    configstore.ConfigStore
+		contains []string
+		absent   []string
+	}{
+		{
+			name:     "bound key",
+			store:    &proxyPoolBindingStore{binding: &schemas.ProxyPoolBinding{PoolID: "pool-1", KeyID: key.ID, Mechanism: schemas.ProxyWeighted}},
+			contains: []string{`"proxy_pool_id":"pool-1"`, `"proxy_pool_mechanism":"weighted"`},
+		},
+		{
+			name:   "unbound key",
+			store:  &proxyPoolBindingStore{},
+			absent: []string{`"proxy_pool_id"`, `"proxy_pool_mechanism"`},
+		},
+		{
+			name:   "no config store",
+			store:  nil,
+			absent: []string{`"proxy_pool_id"`, `"proxy_pool_mechanism"`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHandler(tc.store)
+			for name, handler := range map[string]func(*fasthttp.RequestCtx){
+				"get":  h.getProviderKey,
+				"list": h.listProviderKeys,
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := newTestRequestCtx("")
+					ctx.SetUserValue("provider", string(provider))
+					ctx.SetUserValue("key_id", key.ID)
+					handler(ctx)
+					requireStatus(t, ctx, fasthttp.StatusOK)
+					body := string(ctx.Response.Body())
+					for _, want := range tc.contains {
+						if !strings.Contains(body, want) {
+							t.Fatalf("missing %s in %s", want, body)
+						}
+					}
+					for _, unwanted := range tc.absent {
+						if strings.Contains(body, unwanted) {
+							t.Fatalf("unexpected %s in %s", unwanted, body)
+						}
+					}
+				})
+			}
+		})
+	}
+}
 
 func TestProviderKeyReadRedactsNestedSecrets(t *testing.T) {
 	const canary = "synthetic-provider-key-secret-canary-0123456789"
@@ -721,13 +798,34 @@ func TestValidateProviderKeyOAuthKeyConfig(t *testing.T) {
 		{"jwt_bearer missing audience", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, "audience is required"},
 		{"jwt_bearer literal key is not a PEM", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("not a key") })}, "RSA or EC private key"},
 		{"jwt_bearer env-backed key is not shape checked", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar("env.IDP_KEY") })}, ""},
-		{"an EC key under the default RS256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false)); c.SigningAlgorithm = "" })}, "signing_algorithm"},
-		{"an RSA key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs1TestPEM(t)); c.SigningAlgorithm = "ES256" })}, "signing_algorithm"},
-		{"a P-384 key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), false)); c.SigningAlgorithm = "ES256" })}, "signing_algorithm"},
-		{"a P-256 key with ES256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false)); c.SigningAlgorithm = "ES256" })}, ""},
-		{"a P-384 PKCS#8 key with ES384 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), true)); c.SigningAlgorithm = "ES384" })}, ""},
-		{"a P-521 key with ES512 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P521(), false)); c.SigningAlgorithm = "ES512" })}, ""},
-		{"an RSA key with PS256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = schemas.NewSecretVar(pkcs8TestPEM(t)); c.SigningAlgorithm = "PS256" })}, ""},
+		{"an EC key under the default RS256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false))
+			c.SigningAlgorithm = ""
+		})}, "signing_algorithm"},
+		{"an RSA key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(pkcs1TestPEM(t))
+			c.SigningAlgorithm = "ES256"
+		})}, "signing_algorithm"},
+		{"a P-384 key with ES256 is refused at save", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), false))
+			c.SigningAlgorithm = "ES256"
+		})}, "signing_algorithm"},
+		{"a P-256 key with ES256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P256(), false))
+			c.SigningAlgorithm = "ES256"
+		})}, ""},
+		{"a P-384 PKCS#8 key with ES384 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P384(), true))
+			c.SigningAlgorithm = "ES384"
+		})}, ""},
+		{"a P-521 key with ES512 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(ecCurveTestPEM(t, elliptic.P521(), false))
+			c.SigningAlgorithm = "ES512"
+		})}, ""},
+		{"an RSA key with PS256 is accepted", schemas.OpenAI, schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) {
+			c.PrivateKey = schemas.NewSecretVar(pkcs8TestPEM(t))
+			c.SigningAlgorithm = "PS256"
+		})}, ""},
 		{"a half block behind a value is still refused", schemas.OpenAI, schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, "grant_type is required"},
 		{"refused on a provider that does not resolve it", schemas.Anthropic, schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(nil)}, "only supported on openai"},
 	}

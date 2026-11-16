@@ -26,10 +26,43 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// ProviderKeyResponse is a redacted key plus its proxy pool read projection.
+// The binding lives in proxy_pool_bindings; these fields mirror it for the key
+// editor and are never stored back onto the key itself.
+type ProviderKeyResponse struct {
+	schemas.Key
+	ProxyPoolID        string                 `json:"proxy_pool_id,omitempty"`
+	ProxyPoolMechanism schemas.ProxyMechanism `json:"proxy_pool_mechanism,omitempty"`
+}
+
 // ListProviderKeysResponse represents the response for listing keys for a provider.
 type ListProviderKeysResponse struct {
-	Keys  []schemas.Key `json:"keys"`
-	Total int           `json:"total"`
+	Keys  []ProviderKeyResponse `json:"keys"`
+	Total int                   `json:"total"`
+}
+
+// keyWithProxyProjection decorates one key with its binding, when one exists.
+// A missing store or a lookup error leaves the projection empty: the key's own
+// fields are still served, and the pool remains the binding table's concern.
+func (h *ProviderHandler) keyWithProxyProjection(ctx *fasthttp.RequestCtx, key schemas.Key) ProviderKeyResponse {
+	out := ProviderKeyResponse{Key: key}
+	if h.dbStore == nil {
+		return out
+	}
+	binding, err := h.dbStore.GetBinding(ctx, key.ID)
+	if err == nil && binding != nil {
+		out.ProxyPoolID = binding.PoolID
+		out.ProxyPoolMechanism = binding.Mechanism
+	}
+	return out
+}
+
+func (h *ProviderHandler) keysWithProxyProjection(ctx *fasthttp.RequestCtx, keys []schemas.Key) []ProviderKeyResponse {
+	out := make([]ProviderKeyResponse, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, h.keyWithProxyProjection(ctx, key))
+	}
+	return out
 }
 
 // complexitySemanticRearmer is implemented by the governance plugin. Kept as a
@@ -79,7 +112,7 @@ func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
+	SendJSON(ctx, ListProviderKeysResponse{Keys: h.keysWithProxyProjection(ctx, keys), Total: len(keys)})
 }
 
 func (h *ProviderHandler) getProviderKey(ctx *fasthttp.RequestCtx) {
@@ -105,7 +138,7 @@ func (h *ProviderHandler) getProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	SendJSON(ctx, key)
+	SendJSON(ctx, h.keyWithProxyProjection(ctx, *key))
 }
 
 func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
@@ -461,7 +494,7 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	lib.RecordAuditChange(ctx, "provider.models_refreshed", "provider", string(provider), string(provider), nil, map[string]any{"key_count": len(keys)})
-	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
+	SendJSON(ctx, ListProviderKeysResponse{Keys: h.keysWithProxyProjection(ctx, keys), Total: len(keys)})
 }
 
 // refreshProviderKeyModels handles
