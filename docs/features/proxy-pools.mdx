@@ -1,0 +1,249 @@
+---
+title: "Proxy Pools"
+description: "Give every upstream provider key its own pool of egress proxies, with six selection mechanisms, health probing and a fail-closed exhausted-pool contract."
+icon: "network-wired"
+---
+
+## Overview
+
+By default Bifrost applies at most one proxy per provider (`proxy_config`), so every API key under that provider shares the same egress IP. Providers that fingerprint traffic by source IP can therefore correlate — and eventually ban — otherwise unrelated keys.
+
+**Proxy pools** let each **upstream provider API key** (`schemas.Key`, not a Bifrost Virtual Key) egress through its own set of proxies. A pool is bound to one or more keys with a selection mechanism; each request picks one proxy from the pool. Keys with no binding behave exactly as before.
+
+Key points:
+
+- **Fail closed.** A bound key whose pool cannot serve fails with `503 proxy_pool_exhausted`. Bifrost never falls back to the provider or global proxy, because doing so would leak the caller's real egress IP.
+- **Health aware.** Disabled, dead and cooling-down proxies are skipped by every mechanism.
+- **API-managed.** Pools, their proxies and key bindings live in the config store and are managed through `/api/proxy-pools` (or the Web UI). They are **not** loaded from `config.json`.
+
+---
+
+## How requests resolve a proxy
+
+`PickProxy` runs once per request attempt, after key selection and before the provider dial:
+
+```mermaid
+graph TD
+    A[Request with selected key] --> B{Key bound to a pool?}
+    B -- No --> C[Provider proxy, then global proxy]
+    B -- Yes --> D{Pool has an eligible proxy?}
+    D -- No --> E[503 proxy_pool_exhausted]
+    D -- Yes --> F[Select by mechanism and dial through proxy]
+```
+
+The precedence is always **key-bound pool → provider proxy → global proxy**. A binding replaces the provider/global path; it never layers on top of it. Only proxies that are enabled, not marked `dead`, and not in cooldown are eligible.
+
+---
+
+## Web UI
+
+Open **Settings → Proxy Pools** in the dashboard (sidebar item **Proxy Pools**).
+
+1. **Create a pool** with a name and optional description.
+2. Open the pool to see its proxies, their status, latency and last-tested time.
+3. **Import** proxies (see [Import format](#import-format)), **probe** them, or disable/delete selected proxies from the detail view.
+4. **Bind keys** to the pool and choose a mechanism (see [Selection mechanisms](#selection-mechanisms)). The per-key field in the provider key editor shows `proxy: none` or `<pool> + <mechanism>` and is a read-only projection of the binding.
+
+![Proxy pools list](../media/ui-proxy-pools-list.png)
+
+![Proxy pool detail and probe actions](../media/ui-proxy-pools-detail.png)
+
+---
+
+## API
+
+All endpoints are under `/api/proxy-pools`. They require the same admin authentication as the other management routes.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/proxy-pools` | List pools |
+| `POST` | `/api/proxy-pools` | Create a pool (`name` required) |
+| `GET` | `/api/proxy-pools/{id}` | Get one pool |
+| `PUT` | `/api/proxy-pools/{id}` | Update `name` / `description` |
+| `DELETE` | `/api/proxy-pools/{id}` | Delete a pool and its bindings |
+| `POST` | `/api/proxy-pools/{id}/import` | Import proxies from `text` |
+| `POST` | `/api/proxy-pools/{id}/probe` | Probe proxies (`ids` optional, `mode`) |
+| `POST` | `/api/proxy-pools/{id}/disable` | Disable proxies (`ids` required) |
+| `POST` | `/api/proxy-pools/{id}/delete` | Delete proxies (`ids` required) |
+| `POST` | `/api/proxy-pools/{id}/bind` | Bind keys with a mechanism |
+| `POST` | `/api/proxy-pools/{id}/unbind` | Unbind keys |
+
+### Create a pool
+
+```bash
+curl -X POST http://localhost:8080/api/proxy-pools \
+  -H "Content-Type: application/json" \
+  -d '{"name": "us-east-clean", "description": "Dedicated egress for key A"}'
+```
+
+Returns `201` with the created pool, including its generated `id`.
+
+### Bind keys to a pool
+
+```bash
+curl -X POST http://localhost:8080/api/proxy-pools/<pool-id>/bind \
+  -H "Content-Type: application/json" \
+  -d '{
+    "key_ids": ["<upstream-key-id>"],
+    "mechanism": "round_robin"
+  }'
+```
+
+The binding table is the single source of truth. `proxy_pool_id` and `proxy_pool_mechanism` on the key API are a read-only projection of it; write through `/bind` and `/unbind`, never by editing the key.
+
+### Import proxies
+
+```bash
+curl -X POST http://localhost:8080/api/proxy-pools/<pool-id>/import \
+  -H "Content-Type: application/json" \
+  -d '{"text": "10.0.0.1:8080\nsocks5://user:pass@10.0.0.2:1080"}'
+```
+
+Returns the number of proxies imported.
+
+---
+
+## Import format
+
+`POST /api/proxy-pools/{id}/import` takes one proxy per line. Blank lines and lines starting with `#` are skipped; duplicate `host:port` entries collapse with the first form winning. A malformed line fails the whole request with `400`.
+
+| Line | Result |
+|------|--------|
+| `host:port` | HTTP proxy |
+| `http://host:port` | HTTP proxy |
+| `socks5://user:pass@host:port` | SOCKS5 proxy with credentials |
+| `user:pass@host:port` | HTTP proxy with credentials |
+
+<Note>
+Credentials are encrypted at rest and never returned in API responses. `https://` is accepted as a scheme but dialing uses HTTP CONNECT.
+</Note>
+
+---
+
+## Selection mechanisms
+
+The mechanism is chosen when keys are bound to a pool and stored on the binding.
+
+| Mechanism | Behavior |
+|-----------|----------|
+| `round_robin` | Rotate through eligible proxies in order, per pool. |
+| `random` | Uniform random pick from eligible proxies. |
+| `weighted` | Weighted random pick by each proxy's `weight`; a non-positive weight is ignored. |
+| `least_connections` | Pick the proxy with the fewest in-flight attempts; ties rotate to avoid a fixed favorite. |
+| `fallback` | Walk eligible proxies in order; a failed attempt advances the pointer for that request. |
+| `sticky_session` | Pin a session to one proxy via the shared KV store; without a session id it degrades to round robin, and a pin that dies is re-picked. |
+
+Unknown stored values default to `round_robin` so a bad value cannot stall a bound key; the API rejects unknown mechanisms at bind time.
+
+---
+
+## Health, cooldown and probing
+
+Every mechanism skips proxies that are disabled, marked `dead`, or cooling down. Transport failures accumulate per proxy: **three consecutive failures park it for 60 seconds**, while a permanent failure (for example a `407` proxy-auth error) marks it `dead` immediately. A success resets the streak and revives a previously dead proxy.
+
+### Probe modes
+
+`POST /api/proxy-pools/{id}/probe` verifies one or more proxies and records `status`, `latency_ms` and `egress_ip` on each.
+
+| Mode | What it does |
+|------|--------------|
+| `a` (default) | Completes a CONNECT handshake through the proxy. Records `alive` on success. |
+| `b` | Repeats the handshake, then fetches an echo-IP endpoint through the proxy and records the visible egress IP. |
+
+A probe never assumes a proxy is alive: any failure — including an unreachable or non-IP echo response in mode B — is recorded as `dead`. The default mode-B echo endpoint is `https://api.ipify.org`; self-hosted deployments can override it when constructing the selection manager.
+
+```bash
+curl -X POST http://localhost:8080/api/proxy-pools/<pool-id>/probe \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "b", "ids": ["<proxy-id>"]}'
+```
+
+Omit `ids` to probe every proxy in the pool. A failed individual proxy is reported in `results` with `status: "dead"` and an `error` — it does not fail the whole batch.
+
+---
+
+## The `proxy_pool_exhausted` contract
+
+When a key is bound to a pool that has no eligible proxy — the pool is empty, all proxies are disabled/dead, or every proxy is cooling down — the request fails **before any dial**:
+
+```json
+{
+  "error": {
+    "message": "proxy pool cannot serve: no enabled, live proxy",
+    "type": "proxy_pool_exhausted"
+  }
+}
+```
+
+The HTTP status is **503**. Bifrost does **not** retry through the provider proxy or global proxy in this state. This is deliberate: a silent fallback would send the request from the gateway's own IP and defeat the purpose of the pool. To recover, probe or re-enable a proxy, add a new one, or unbind the key.
+
+<Warning>
+A `proxy_pool_exhausted` 503 is terminal for that attempt. Verify the pool's health before assuming the upstream provider is at fault.
+</Warning>
+
+---
+
+## config.json
+
+Proxy pools are an API/UI-managed asset and are not read from `config.json`. The schema defines reference shapes for the objects the API stores; they are documented here only so integrations can recognize the fields in API responses.
+
+```json
+{
+  "proxy_pool": {
+    "id": "pool-1",
+    "name": "us-east-clean",
+    "description": "Dedicated egress for key A",
+    "proxies": [
+      {
+        "id": "proxy-1",
+        "pool_id": "pool-1",
+        "type": "http",
+        "url": "10.0.0.1:8080",
+        "weight": 1,
+        "enabled": true,
+        "status": "alive"
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | Yes | Generated pool id. |
+| `name` | string | Yes | Pool name. |
+| `description` | string | No | Free-text description. |
+| `proxies[].type` | string | Yes | `http` or `socks5`. |
+| `proxies[].url` | string | Yes | Host and port, optionally scheme-prefixed. |
+| `proxies[].status` | string | No | `unknown`, `alive` or `dead`. |
+| `proxies[].weight` | number | No | Weight for the `weighted` mechanism; defaults to `1`. |
+
+A binding reference shape: `{ "pool_id": "pool-1", "key_id": "<upstream-key-id>", "mechanism": "round_robin" }`, where `key_id` is an upstream provider key id, not a Bifrost Virtual Key.
+
+---
+
+## Troubleshooting
+
+### Requests fail with `proxy_pool_exhausted`
+
+**Cause:** The key is bound to a pool with no eligible proxy. **Fix:** Check the pool detail view for `dead`/disabled proxies, run a probe, or unbind the key.
+
+### A bound key still appears to use the provider proxy
+
+**Cause:** The key was not actually bound, or the binding was removed. **Fix:** Confirm `proxy_pool_id` on the key API is set and that `/api/proxy-pools/{id}/bind` returned success.
+
+### Mode-B probes always report `dead`
+
+**Cause:** The echo endpoint is unreachable through the proxy or returned a non-IP body. **Fix:** Use a reachable echo endpoint and ensure it returns only an IP address.
+
+### Proxies imported as duplicates
+
+**Cause:** Several lines share a `host:port`; the first wins. **Fix:** Give each proxy a distinct `host:port`.
+
+---
+
+## Next steps
+
+- [Load balance](./keys-management) — how Bifrost selects an upstream key before a proxy is picked.
+- [Retries and fallbacks](./retries-and-fallbacks) — how a failed attempt moves through keys and, with the `fallback` mechanism, through proxies.
+- [Proxy configuration](../quickstart/gateway/provider-configuration) — the provider-level and global proxy settings that a key pool overrides.

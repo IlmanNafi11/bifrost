@@ -292,6 +292,7 @@
               "features/warp",
               "features/compat-plugin",
               "features/keys-management",
+              "features/proxy-pools",
               "features/async-inference",
               "features/webhooks",
               "features/news-feeds",
