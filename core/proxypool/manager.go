@@ -128,15 +128,16 @@ func (m *Manager) RecordSuccess(ctx *schemas.BifrostContext, proxyID string) {
 // also advances the per-request fallback pointer.
 func (m *Manager) RecordFailure(ctx *schemas.BifrostContext, proxyID string, permanent bool) {
 	ctx = ensureCtx(ctx)
+	count := m.failureCount(proxyID)
 	if permanent {
 		m.state.set(deadKey(proxyID), "1", 0)
 		m.state.del(failureKey(proxyID))
 		m.state.del(cooldownKey(proxyID))
-	} else if m.failureCount(proxyID)+1 >= ProxyFailureCooldownThreshold {
+	} else if count+1 >= ProxyFailureCooldownThreshold {
 		m.state.set(cooldownKey(proxyID), time.Now().Add(ProxyFailureCooldown).UnixNano(), ProxyFailureCooldown)
 		m.state.del(failureKey(proxyID))
 	} else {
-		m.state.set(failureKey(proxyID), m.failureCount(proxyID)+1, 0)
+		m.state.set(failureKey(proxyID), count+1, 0)
 	}
 	idx, _ := ctx.Value(fallbackIndexKey).(int)
 	ctx.SetValue(fallbackIndexKey, idx+1)

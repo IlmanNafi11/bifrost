@@ -66,7 +66,11 @@ func (m *Manager) selectWeighted(candidates []schemas.PoolProxy) schemas.PoolPro
 // Ties go to the first candidate in round-robin order, so the choice is stable
 // and does not favour a fixed proxy when all counters are equal.
 func (m *Manager) selectLeastConnections(poolID string, candidates []schemas.PoolProxy) schemas.PoolProxy {
-	offset := int(m.nextCursor(poolID) % uint64(len(candidates)))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.cursors[poolID]
+	m.cursors[poolID] = c + 1
+	offset := int(c % uint64(len(candidates)))
 	best := candidates[offset]
 	bestCount := m.inFlight[best.ID]
 	for i := 1; i < len(candidates); i++ {
@@ -75,9 +79,7 @@ func (m *Manager) selectLeastConnections(poolID string, candidates []schemas.Poo
 			best, bestCount = p, n
 		}
 	}
-	m.mu.Lock()
 	m.inFlight[best.ID]++
-	m.mu.Unlock()
 	return best
 }
 
