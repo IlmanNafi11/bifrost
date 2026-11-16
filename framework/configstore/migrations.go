@@ -592,6 +592,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_datasheet_overrides_table"}, run: migrationAddDatasheetOverridesTable},
 	{IDs: []string{"add_virtual_key_listed_models_column"}, run: migrationAddVirtualKeyListedModelsColumn},
 	{IDs: []string{"add_usage_estimation_tokenizers_json_column"}, run: migrationAddUsageEstimationTokenizersJSONColumn},
+	{IDs: []string{"add_proxy_pool_tables"}, run: migrationAddProxyPoolTables},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17196,4 +17197,27 @@ func migrationAddUsageEstimationTokenizersJSONColumn(ctx context.Context, db *go
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
 	}
 	return nil
+}
+
+// migrationAddProxyPoolTables creates the proxy_pools, proxy_pool_proxies and
+// proxy_pool_bindings tables. All three are additive: older binaries ignore
+// them, so the migration is non-rollbackable rather than dropping user-configured
+// pools, proxies and key bindings on a downgrade.
+func migrationAddProxyPoolTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_proxy_pool_tables"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(
+				&tables.TableProxyPool{},
+				&tables.TablePoolProxy{},
+				&tables.TableProxyPoolBinding{},
+			)
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping the proxy pool tables would permanently delete pools, proxies and key bindings; the tables are additive and older binaries ignore them", migrationName)
+		},
+	})
 }

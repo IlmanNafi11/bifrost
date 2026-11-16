@@ -42,6 +42,9 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&TableMCPOauthFlow{},
 		&TableVectorStoreConfig{},
 		&TableWebhookEndpoint{},
+		&TableProxyPool{},
+		&TablePoolProxy{},
+		&TableProxyPoolBinding{},
 	)
 	require.NoError(t, err)
 	return db

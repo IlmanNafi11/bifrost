@@ -5955,3 +5955,19 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
 }
+
+// An upgraded install has no proxy pool tables; the migration creates all three
+// (and the binding's composite index), and running it again is a no-op.
+func TestMigrationAddProxyPoolTables(t *testing.T) {
+	ctx := context.Background()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+
+	require.NoError(t, migrationAddProxyPoolTables(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasTable(&tables.TableProxyPool{}))
+	require.True(t, db.Migrator().HasTable(&tables.TablePoolProxy{}))
+	require.True(t, db.Migrator().HasTable(&tables.TableProxyPoolBinding{}))
+	require.True(t, db.Migrator().HasIndex(&tables.TableProxyPoolBinding{}, "idx_proxy_pool_bindings_key"))
+	require.NoError(t, migrationAddProxyPoolTables(ctx, db, testMigrationLogger))
+}
