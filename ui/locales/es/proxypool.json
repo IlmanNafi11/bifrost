@@ -48,6 +48,14 @@
 	"keyProxyDescription": "Enruta el tráfico de esta clave por un grupo de proxy dedicado.",
 	"keyProxyNone": "Ninguno (usar el proxy del proveedor)",
 	"keyProxyMechanism": "Mecanismo de selección",
+	"mechanisms": {
+		"round_robin": "Round robin",
+		"random": "Aleatorio",
+		"weighted": "Ponderado",
+		"least_connections": "Menos conexiones",
+		"fallback": "Respaldo",
+		"sticky_session": "Sesión pegajosa"
+	},
 	"toastCreated": "Grupo de proxy creado",
 	"toastUpdated": "Grupo de proxy actualizado",
 	"toastDeleted": "Grupo de proxy eliminado",

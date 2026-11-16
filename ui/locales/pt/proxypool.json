@@ -48,6 +48,14 @@
 	"keyProxyDescription": "Roteie o tráfego desta chave por um pool de proxy dedicado.",
 	"keyProxyNone": "Nenhum (usar o proxy do provedor)",
 	"keyProxyMechanism": "Mecanismo de seleção",
+	"mechanisms": {
+		"round_robin": "Round robin",
+		"random": "Aleatório",
+		"weighted": "Ponderado",
+		"least_connections": "Menos conexões",
+		"fallback": "Fallback",
+		"sticky_session": "Sessão fixa"
+	},
 	"toastCreated": "Pool de proxy criado",
 	"toastUpdated": "Pool de proxy atualizado",
 	"toastDeleted": "Pool de proxy excluído",

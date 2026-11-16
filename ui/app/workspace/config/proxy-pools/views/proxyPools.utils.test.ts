@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normaliseProbeMode, parseProxyLine, previewProxyImport, proxyStatusTone } from "./proxyPools.utils";
+import { bindingChange, normaliseProbeMode, parseProxyLine, previewProxyImport, proxyStatusTone } from "./proxyPools.utils";
 
 describe("parseProxyLine", () => {
 	it("accepts the four import forms", () => {
@@ -32,6 +32,48 @@ describe("previewProxyImport", () => {
 		const preview = previewProxyImport("garbage\nproxy.example.com:8080\nproxy.example.com:8080/path");
 		expect(preview.unique).toBe(1);
 		expect(preview.invalid).toEqual(["garbage", "proxy.example.com:8080/path"]);
+	});
+});
+
+describe("bindingChange", () => {
+	it("does nothing when the selection is unchanged", () => {
+		expect(bindingChange({ pool_id: "p1", mechanism: "random" }, { pool_id: "p1", mechanism: "random" })).toEqual({
+			changed: false,
+			unbind: false,
+			bind: false,
+		});
+	});
+
+	it("unbinds only when switching away from a pool", () => {
+		expect(bindingChange({ pool_id: "p1", mechanism: "random" }, { pool_id: "", mechanism: "random" })).toEqual({
+			changed: true,
+			unbind: true,
+			bind: false,
+		});
+	});
+
+	it("rebinds when only the mechanism changes on the same pool", () => {
+		expect(bindingChange({ pool_id: "p1", mechanism: "random" }, { pool_id: "p1", mechanism: "weighted" })).toEqual({
+			changed: true,
+			unbind: false,
+			bind: true,
+		});
+	});
+
+	it("switches pools with unbind then bind", () => {
+		expect(bindingChange({ pool_id: "p1", mechanism: "random" }, { pool_id: "p2", mechanism: "random" })).toEqual({
+			changed: true,
+			unbind: true,
+			bind: true,
+		});
+	});
+
+	it("binds a previously unbound key", () => {
+		expect(bindingChange({ pool_id: "", mechanism: "random" }, { pool_id: "p1", mechanism: "random" })).toEqual({
+			changed: true,
+			unbind: false,
+			bind: true,
+		});
 	});
 });
 

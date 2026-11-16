@@ -48,6 +48,14 @@
 	"keyProxyDescription": "Route this key's traffic through a dedicated proxy pool.",
 	"keyProxyNone": "None (use provider proxy)",
 	"keyProxyMechanism": "Selection mechanism",
+	"mechanisms": {
+		"round_robin": "Round robin",
+		"random": "Random",
+		"weighted": "Weighted",
+		"least_connections": "Least connections",
+		"fallback": "Fallback",
+		"sticky_session": "Sticky session"
+	},
 	"toastCreated": "Proxy pool created",
 	"toastUpdated": "Proxy pool updated",
 	"toastDeleted": "Proxy pool deleted",

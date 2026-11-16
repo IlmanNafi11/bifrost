@@ -1,4 +1,9 @@
-import type { ProxyProbeMode } from "@/lib/types/proxyPools";
+import type { ProxyMechanism, ProxyProbeMode } from "@/lib/types/proxyPools";
+
+export interface BindingSelection {
+	pool_id: string;
+	mechanism: ProxyMechanism;
+}
 
 export interface ImportPreview {
 	unique: number;
@@ -52,6 +57,19 @@ export function previewProxyImport(text: string): ImportPreview {
 		seen.add(key);
 	}
 	return { unique: seen.size, invalid };
+}
+
+// Which binding calls a key form must make after save. Switching pools needs an
+// unbind followed by a bind; changing only the mechanism is a rebind; "none" only
+// unbinds. Nothing happens when the selection is unchanged.
+export function bindingChange(before: BindingSelection, after: BindingSelection) {
+	const poolChanged = before.pool_id !== after.pool_id;
+	const mechanismChanged = after.pool_id !== "" && before.mechanism !== after.mechanism;
+	return {
+		changed: poolChanged || mechanismChanged,
+		unbind: before.pool_id !== "" && poolChanged,
+		bind: after.pool_id !== "" && (poolChanged || mechanismChanged),
+	};
 }
 
 export type ProxyStatusTone = "success" | "destructive" | "secondary";

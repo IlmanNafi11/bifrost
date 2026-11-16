@@ -48,6 +48,14 @@
 	"keyProxyDescription": "Направлять трафик этого ключа через выделенный пул прокси.",
 	"keyProxyNone": "Нет (использовать прокси провайдера)",
 	"keyProxyMechanism": "Механизм выбора",
+	"mechanisms": {
+		"round_robin": "Циклический",
+		"random": "Случайный",
+		"weighted": "Взвешенный",
+		"least_connections": "Наименьшее число соединений",
+		"fallback": "Резервный",
+		"sticky_session": "Закреплённая сессия"
+	},
 	"toastCreated": "Пул прокси создан",
 	"toastUpdated": "Пул прокси обновлён",
 	"toastDeleted": "Пул прокси удалён",

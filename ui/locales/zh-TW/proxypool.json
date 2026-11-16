@@ -48,6 +48,14 @@
 	"keyProxyDescription": "透過專用代理池路由此金鑰的流量。",
 	"keyProxyNone": "無（使用提供者代理）",
 	"keyProxyMechanism": "選擇機制",
+	"mechanisms": {
+		"round_robin": "輪詢",
+		"random": "隨機",
+		"weighted": "加權",
+		"least_connections": "最少連線",
+		"fallback": "回退",
+		"sticky_session": "黏性工作階段"
+	},
 	"toastCreated": "代理池已建立",
 	"toastUpdated": "代理池已更新",
 	"toastDeleted": "代理池已刪除",

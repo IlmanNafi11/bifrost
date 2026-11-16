@@ -48,6 +48,14 @@
 	"keyProxyDescription": "このキーのトラフィックを専用のプロキシプール経由でルーティングします。",
 	"keyProxyNone": "なし（プロバイダーのプロキシを使用）",
 	"keyProxyMechanism": "選択方式",
+	"mechanisms": {
+		"round_robin": "ラウンドロビン",
+		"random": "ランダム",
+		"weighted": "重み付け",
+		"least_connections": "最少接続",
+		"fallback": "フォールバック",
+		"sticky_session": "スティッキーセッション"
+	},
 	"toastCreated": "プロキシプールを作成しました",
 	"toastUpdated": "プロキシプールを更新しました",
 	"toastDeleted": "プロキシプールを削除しました",

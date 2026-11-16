@@ -48,6 +48,14 @@
 	"keyProxyDescription": "Leite den Datenverkehr dieses Keys über einen eigenen Proxy-Pool.",
 	"keyProxyNone": "Keiner (Provider-Proxy verwenden)",
 	"keyProxyMechanism": "Auswahlmechanismus",
+	"mechanisms": {
+		"round_robin": "Round-Robin",
+		"random": "Zufällig",
+		"weighted": "Gewichtet",
+		"least_connections": "Wenigste Verbindungen",
+		"fallback": "Fallback",
+		"sticky_session": "Sticky Session"
+	},
 	"toastCreated": "Proxy-Pool erstellt",
 	"toastUpdated": "Proxy-Pool aktualisiert",
 	"toastDeleted": "Proxy-Pool gelöscht",

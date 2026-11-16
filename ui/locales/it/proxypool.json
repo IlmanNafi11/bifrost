@@ -48,6 +48,14 @@
 	"keyProxyDescription": "Instrada il traffico di questa chiave tramite un pool di proxy dedicato.",
 	"keyProxyNone": "Nessuno (usa il proxy del provider)",
 	"keyProxyMechanism": "Meccanismo di selezione",
+	"mechanisms": {
+		"round_robin": "Round robin",
+		"random": "Casuale",
+		"weighted": "Pesata",
+		"least_connections": "Minori connessioni",
+		"fallback": "Fallback",
+		"sticky_session": "Sessione persistente"
+	},
 	"toastCreated": "Pool di proxy creato",
 	"toastUpdated": "Pool di proxy aggiornato",
 	"toastDeleted": "Pool di proxy eliminato",

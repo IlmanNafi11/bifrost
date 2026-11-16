@@ -48,6 +48,14 @@
 	"keyProxyDescription": "이 키의 트래픽을 전용 프록시 풀로 라우팅합니다.",
 	"keyProxyNone": "없음 (공급자 프록시 사용)",
 	"keyProxyMechanism": "선택 방식",
+	"mechanisms": {
+		"round_robin": "라운드 로빈",
+		"random": "무작위",
+		"weighted": "가중치",
+		"least_connections": "최소 연결",
+		"fallback": "폴백",
+		"sticky_session": "고정 세션"
+	},
 	"toastCreated": "프록시 풀이 생성되었습니다",
 	"toastUpdated": "프록시 풀이 업데이트되었습니다",
 	"toastDeleted": "프록시 풀이 삭제되었습니다",
