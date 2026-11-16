@@ -807,6 +807,14 @@ export function useNavItems(): NavItem[] {
 							]
 						: []),
 					{
+						id: "settings.proxy-pools",
+						title: t("nav.proxyPools"),
+						url: "/workspace/config/proxy-pools",
+						icon: Network,
+						hasAccess: hasSettingsAccess,
+						testId: "proxy-pool-nav",
+					},
+					{
 						id: "settings.api-keys",
 						title: t("nav.apiKeys"),
 						url: "/workspace/config/api-keys",
