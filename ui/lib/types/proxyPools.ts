@@ -2,14 +2,7 @@
 // The binding is the single source of truth for a key's pool; the proxy_pool_*
 // fields on a key are a read-only projection of it.
 
-export const PROXY_MECHANISMS = [
-	"round_robin",
-	"random",
-	"weighted",
-	"least_connections",
-	"fallback",
-	"sticky_session",
-] as const;
+export const PROXY_MECHANISMS = ["round_robin", "random", "weighted", "least_connections", "fallback", "sticky_session"] as const;
 
 export type ProxyMechanism = (typeof PROXY_MECHANISMS)[number];
 

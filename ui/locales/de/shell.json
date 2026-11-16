@@ -583,10 +583,7 @@
 			"tool_error": {
 				"summary": "Eine Abfrage ist fehlgeschlagen.",
 				"cause": "Eine von Warps Datenabfragen hat einen Fehler zurückgegeben, und innerhalb der verbleibenden Schritte war keine Wiederherstellung möglich.",
-				"suggestions": [
-					"Engeren Zeitraum wählen.",
-					"Prüfen, ob das genannte Modell, der Schlüssel oder das Team wirklich existiert."
-				]
+				"suggestions": ["Engeren Zeitraum wählen.", "Prüfen, ob das genannte Modell, der Schlüssel oder das Team wirklich existiert."]
 			},
 			"cancelled": {
 				"summary": "Gestoppt.",
@@ -596,10 +593,7 @@
 			"unknown": {
 				"summary": "Etwas ist schiefgelaufen.",
 				"cause": "Warp hat einen Fehler ohne bekannten Code zurückgegeben.",
-				"suggestions": [
-					"Frage nochmal stellen.",
-					"Wenn es weiter passiert, mit den Details unten melden."
-				]
+				"suggestions": ["Frage nochmal stellen.", "Wenn es weiter passiert, mit den Details unten melden."]
 			},
 			"access_denied": {
 				"summary": "Dein Konto hat keinen Zugriff auf das Modell von Warp.",

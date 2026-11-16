@@ -95,12 +95,7 @@ export default function ProxyPoolSheet({ open, onOpenChange, pool, onSaved }: Pr
 							/>
 						</div>
 						<SheetFooter className="flex-row justify-end border-t px-4 py-4 md:px-6">
-							<Button
-								type="button"
-								variant="outline"
-								onClick={() => onOpenChange(false)}
-								data-testid="proxy-pool-cancel-btn"
-							>
+							<Button type="button" variant="outline" onClick={() => onOpenChange(false)} data-testid="proxy-pool-cancel-btn">
 								{t("actionCancel")}
 							</Button>
 							<Button

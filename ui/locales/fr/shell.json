@@ -596,10 +596,7 @@
 			"unknown": {
 				"summary": "Une erreur s'est produite.",
 				"cause": "Warp a renvoyé une erreur sans code reconnu.",
-				"suggestions": [
-					"Réessayez la question.",
-					"Si cela continue, signalez-le avec les détails ci-dessous."
-				]
+				"suggestions": ["Réessayez la question.", "Si cela continue, signalez-le avec les détails ci-dessous."]
 			},
 			"access_denied": {
 				"summary": "Votre compte n’a pas accès au modèle de Warp.",

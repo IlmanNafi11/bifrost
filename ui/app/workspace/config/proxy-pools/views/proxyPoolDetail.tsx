@@ -1,5 +1,14 @@
 import PageTitle from "@/components/pageTitle";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alertDialog";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -28,7 +37,8 @@ export default function ProxyPoolDetail({ pool, onChanged }: Props) {
 	const [disable, { isLoading: isDisabling }] = useDisableProxiesMutation();
 	const [deleteProxies, { isLoading: isDeleting }] = useDeleteProxiesMutation();
 
-	const toggle = (id: string) => setSelectedIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+	const toggle = (id: string) =>
+		setSelectedIds((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
 	const ids = selectedIds.length > 0 ? selectedIds : undefined;
 
 	const tail = (mutation: Promise<unknown>, success: string) =>
@@ -74,12 +84,20 @@ export default function ProxyPoolDetail({ pool, onChanged }: Props) {
 					variant="outline"
 					isLoading={isDisabling}
 					disabled={selectedIds.length === 0 || isDisabling}
-					onClick={() => tail(disable({ id: pool.id, data: { ids: selectedIds } }).unwrap(), t("toastDisabled", { count: selectedIds.length }))}
+					onClick={() =>
+						tail(disable({ id: pool.id, data: { ids: selectedIds } }).unwrap(), t("toastDisabled", { count: selectedIds.length }))
+					}
 					data-testid="proxy-pool-disable-btn"
 				>
 					{t("actionDisable")}
 				</Button>
-				<Button size="sm" variant="destructive" disabled={selectedIds.length === 0} onClick={() => setDeleteOpen(true)} data-testid="proxy-pool-delete-proxies-btn">
+				<Button
+					size="sm"
+					variant="destructive"
+					disabled={selectedIds.length === 0}
+					onClick={() => setDeleteOpen(true)}
+					data-testid="proxy-pool-delete-proxies-btn"
+				>
 					{t("actionDelete")}
 				</Button>
 			</div>
@@ -132,12 +150,7 @@ export default function ProxyPoolDetail({ pool, onChanged }: Props) {
 				</TableBody>
 			</Table>
 
-			<ImportProxiesDialog
-				open={importOpen}
-				onOpenChange={setImportOpen}
-				poolId={pool.id}
-				onImported={onChanged}
-			/>
+			<ImportProxiesDialog open={importOpen} onOpenChange={setImportOpen} poolId={pool.id} onImported={onChanged} />
 
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 				<AlertDialogContent data-testid="proxy-pool-delete-proxies-dialog">

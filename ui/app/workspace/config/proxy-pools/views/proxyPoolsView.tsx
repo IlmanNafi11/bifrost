@@ -1,6 +1,15 @@
 import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alertDialog";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getErrorMessage, useDeleteProxyPoolMutation, useGetProxyPoolsQuery } from "@/lib/store";
@@ -108,7 +117,12 @@ export default function ProxyPoolsView() {
 										<Button size="sm" variant="outline" onClick={() => openEdit(pool)} data-testid={`proxy-pool-edit-${pool.id}`}>
 											{t("actionEdit")}
 										</Button>
-										<Button size="sm" variant="destructive" onClick={() => setDeleteTarget(pool)} data-testid={`proxy-pool-delete-${pool.id}`}>
+										<Button
+											size="sm"
+											variant="destructive"
+											onClick={() => setDeleteTarget(pool)}
+											data-testid={`proxy-pool-delete-${pool.id}`}
+										>
 											{t("actionDelete")}
 										</Button>
 									</div>
