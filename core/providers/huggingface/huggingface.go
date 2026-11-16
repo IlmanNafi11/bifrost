@@ -28,6 +28,7 @@ type HuggingFaceProvider struct {
 	sendBackRawRequest        bool
 	customProviderConfig      *schemas.CustomProviderConfig
 	modelProviderMappingCache *sync.Map
+	proxied                   *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 var huggingFaceTranscriptionResponsePool = sync.Pool{
@@ -97,6 +98,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &HuggingFaceProvider{
+		proxied:                   providerUtils.NewProxiedClientCache(0),
 		logger:                    logger,
 		client:                    client,
 		streamingClient:           streamingClient,
@@ -246,7 +248,7 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, nil, bifrostErr
@@ -315,7 +317,7 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 				req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 			}
 
-			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 			defer wait()
 			if bifrostErr != nil {
 				resultsChan <- providerResult{provider: inferProvider, err: bifrostErr}
@@ -572,7 +574,7 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionStreamRequest),
 		request,
 		openai.BearerAuthHeader(key),
@@ -1079,7 +1081,7 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1470,7 +1472,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1854,4 +1856,21 @@ func (provider *HuggingFaceProvider) Passthrough(_ *schemas.BifrostContext, _ sc
 
 func (provider *HuggingFaceProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *HuggingFaceProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *HuggingFaceProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

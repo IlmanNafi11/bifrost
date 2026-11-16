@@ -419,7 +419,7 @@ func (provider *AzureProvider) listSpeechVoices(ctx *schemas.BifrostContext, key
 		req.Header.Set(k, v)
 	}
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -514,7 +514,7 @@ func (provider *AzureProvider) speechSynthesis(ctx *schemas.BifrostContext, key 
 		return bifrostErr
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, enrich(bifrostErr, latency)
@@ -576,7 +576,7 @@ func (provider *AzureProvider) speechSynthesisStream(ctx *schemas.BifrostContext
 	}
 
 	startTime := time.Now()
-	requestErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	requestErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -737,7 +737,7 @@ func (provider *AzureProvider) speechTranscription(ctx *schemas.BifrostContext, 
 	req.SetBody(body.Bytes())
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, false, provider.sendBackRawResponse, latency)
@@ -1079,7 +1079,7 @@ func (provider *AzureProvider) speechShortAudioTranscription(ctx *schemas.Bifros
 	req.SetBody(request.Input.File)
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, false, provider.sendBackRawResponse, latency)

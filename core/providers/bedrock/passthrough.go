@@ -217,9 +217,9 @@ func (provider *BedrockProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 		return nil, bifrostErr
 	}
 
-	client := provider.client
+	client := provider.clientFor(ctx)
 	if route.streaming {
-		client = provider.streamingClient
+		client = provider.streamingClientFor(ctx)
 	}
 	startTime := time.Now()
 	resp, err := providerUtils.DoHTTPRequest(client, httpReq)
@@ -274,7 +274,7 @@ func (provider *BedrockProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 	}
 
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.streamingClient, httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.streamingClientFor(ctx), httpReq)
 	if err != nil {
 		return nil, passthroughTransportError(err, time.Since(startTime))
 	}

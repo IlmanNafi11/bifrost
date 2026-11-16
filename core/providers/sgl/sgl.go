@@ -20,12 +20,13 @@ const sglAnthropicVersion = "2023-06-01"
 
 // SGLProvider implements the Provider interface for SGL's API.
 type SGLProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewSGLProvider creates a new SGL provider instance.
@@ -59,6 +60,7 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 
 	// BaseURL is optional when keys have sgl_key_config with per-key URLs
 	return &SGLProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -113,7 +115,7 @@ func (provider *SGLProvider) listModelsByKey(ctx *schemas.BifrostContext, key sc
 	url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/models")
 	return openai.ListModelsByKey(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		key,
 		request.Unfiltered,
@@ -148,7 +150,7 @@ func (provider *SGLProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -173,7 +175,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -204,7 +206,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -222,7 +224,7 @@ func (provider *SGLProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -262,7 +264,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		}
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			jsonData,
 			anthropicHeaders(key),
@@ -282,7 +284,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -316,7 +318,7 @@ func (provider *SGLProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 		}
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -365,7 +367,7 @@ func (provider *SGLProvider) ResponsesStream(ctx *schemas.BifrostContext, postHo
 		}
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			jsonData,
 			anthropicHeaders(key),
@@ -401,7 +403,7 @@ func (provider *SGLProvider) Embedding(ctx *schemas.BifrostContext, key schemas.
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -569,7 +571,7 @@ func (provider *SGLProvider) CountTokens(ctx *schemas.BifrostContext, key schema
 
 	return anthropic.HandleAnthropicCountTokensRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages/count_tokens"),
 		request,
 		anthropic.AnthropicRequestBuildConfig{
@@ -648,4 +650,21 @@ func (provider *SGLProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Ke
 
 func (provider *SGLProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *SGLProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *SGLProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

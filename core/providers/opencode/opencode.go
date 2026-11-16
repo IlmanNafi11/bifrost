@@ -28,6 +28,7 @@ type opencodeProvider struct {
 	// Completions when the upstream gateway does not implement /v1/responses.
 	// Zen is the only such gateway today; Go serves /v1/responses natively.
 	fallbackResponsesToChat bool
+	proxied                 *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewOpencodeZenProvider creates a new Opencode Zen provider instance.
@@ -74,6 +75,7 @@ func newOpencodeProvider(
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &opencodeProvider{
+		proxied:                 providerUtils.NewProxiedClientCache(0),
 		providerKey:             providerKey,
 		logger:                  logger,
 		client:                  client,
@@ -140,7 +142,7 @@ func (p *opencodeProvider) inferenceAuthHeaders(ctx *schemas.BifrostContext, key
 func (p *opencodeProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		request,
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
@@ -165,7 +167,7 @@ func (p *opencodeProvider) TextCompletionStream(ctx *schemas.BifrostContext, pos
 func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		p.inferenceAuthHeaders(ctx, key),
@@ -184,7 +186,7 @@ func (p *opencodeProvider) ChatCompletion(ctx *schemas.BifrostContext, key schem
 func (p *opencodeProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		p.streamingClient,
+		p.streamingClientFor(ctx),
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		p.inferenceAuthHeaders(ctx, key),
@@ -217,7 +219,7 @@ func (p *opencodeProvider) Responses(ctx *schemas.BifrostContext, key schemas.Ke
 
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		p.inferenceAuthHeaders(ctx, key),
@@ -247,7 +249,7 @@ func (p *opencodeProvider) ResponsesStream(ctx *schemas.BifrostContext, postHook
 
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		p.streamingClient,
+		p.streamingClientFor(ctx),
 		p.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		p.inferenceAuthHeaders(ctx, key),
@@ -490,4 +492,21 @@ func (p *opencodeProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key,
 // PassthroughStream is not supported by Opencode.
 func (p *opencodeProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, p.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (p *opencodeProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if p.proxied == nil {
+		return p.client
+	}
+	return p.proxied.Unary(ctx, p.client, p.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (p *opencodeProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if p.proxied == nil {
+		return p.streamingClient
+	}
+	return p.proxied.Streaming(ctx, p.streamingClient, p.logger)
 }

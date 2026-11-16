@@ -23,6 +23,7 @@ type SageMakerProvider struct {
 	sendBackRawResponse bool                               // Whether to include raw response in BifrostResponse
 	tokens              *tokencache.Cache[string]          // Minted bearer tokens ("Bearer ..."), one slot per credential tuple and region
 	creds               *tokencache.Cache[aws.Credentials] // Resolved AWS credentials for SigV4 calls, one slot per credential tuple and region
+	proxied             *providerUtils.ProxiedClientCache  // Reusable clients for per-attempt pool proxies
 }
 
 // NewSageMakerProvider creates a SageMaker provider with its unary and streaming clients.
@@ -44,6 +45,7 @@ func NewSageMakerProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 
 	return &SageMakerProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     providerUtils.BuildStreamingClient(client),
@@ -139,7 +141,7 @@ func (provider *SageMakerProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	}
 	response, bErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		withBodyModel(request),
 		auth,
@@ -165,7 +167,7 @@ func (provider *SageMakerProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		return nil, bErr
 	}
 	stream, bErr := openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.streamingClient, url, withBodyModel(request),
+		ctx, provider.streamingClientFor(ctx), url, withBodyModel(request),
 		auth, provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -441,4 +443,21 @@ func (provider *SageMakerProvider) ContainerFileContent(_ *schemas.BifrostContex
 // ContainerFileDelete is not supported by the SageMaker provider.
 func (provider *SageMakerProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *SageMakerProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *SageMakerProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

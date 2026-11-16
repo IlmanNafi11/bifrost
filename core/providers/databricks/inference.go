@@ -407,7 +407,7 @@ func (provider *DatabricksProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		request,
 		auth,
@@ -438,7 +438,7 @@ func (provider *DatabricksProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		url,
 		request,
 		auth,
@@ -468,7 +468,7 @@ func (provider *DatabricksProvider) Embedding(ctx *schemas.BifrostContext, key s
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		request,
 		auth,
@@ -511,7 +511,7 @@ func (provider *DatabricksProvider) Responses(ctx *schemas.BifrostContext, key s
 	}
 	response, bErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		wireRequest,
 		auth,
@@ -555,7 +555,7 @@ func (provider *DatabricksProvider) ResponsesStream(ctx *schemas.BifrostContext,
 	}
 	stream, bErr := openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		url,
 		wireRequest,
 		auth,

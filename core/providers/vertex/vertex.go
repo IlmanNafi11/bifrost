@@ -183,6 +183,7 @@ type VertexProvider struct {
 	// provider, and a source built for the old proxy must not outlive it.
 	// Entries are evicted by removeVertexClient on 401/403 or token-acquisition errors.
 	tokenSources sync.Map
+	proxied      *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewVertexProvider creates a new Vertex provider instance.
@@ -206,6 +207,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	return &VertexProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -394,7 +396,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+			latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 			if bifrostErr != nil {
 				wait()
 				respBody := append([]byte(nil), resp.Body()...)
@@ -900,7 +902,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 
 	// Make the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -1102,7 +1104,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Use shared Anthropic streaming logic
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			completeURL,
 			jsonData,
 			headers,
@@ -1197,7 +1199,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Use shared streaming logic from Gemini
 		return gemini.HandleGeminiChatCompletionStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			completeURL,
 			jsonData,
 			headers,
@@ -1249,7 +1251,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		// Use shared OpenAI streaming logic
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			completeURL,
 			request,
 			authHeader,
@@ -1352,7 +1354,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// Make the request with optional large response streaming
-		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		defer wait()
 		if bifrostErr != nil {
@@ -1515,7 +1517,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// Make the request with optional large response streaming
-		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		defer wait()
 		if bifrostErr != nil {
@@ -1642,7 +1644,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		// Use shared streaming logic from Anthropic
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			jsonBody,
 			headers,
@@ -1750,7 +1752,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		// Use shared streaming logic from Gemini
 		return gemini.HandleGeminiResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			completeURL,
 			jsonData,
 			headers,
@@ -1874,7 +1876,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Make the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -2026,7 +2028,7 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		req.SetBody(jsonBody)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -2124,7 +2126,7 @@ func (provider *VertexProvider) geminiSpeech(ctx *schemas.BifrostContext, key sc
 		req.SetBody(jsonBody)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -2228,7 +2230,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	}
 
 	// Make the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -2369,7 +2371,7 @@ func (provider *VertexProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	return gemini.HandleGeminiSpeechStream(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		completeURL,
 		jsonBody,
 		headers,
@@ -2523,7 +2525,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	}
 
 	// Make the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -2732,7 +2734,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Make the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -2901,7 +2903,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	req.SetRequestURI(completeURL)
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -3012,7 +3014,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	req.SetRequestURI(completeURL)
 	req.SetBody(jsonBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -3123,7 +3125,7 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		}
 		var bifrostErr *schemas.BifrostError
 		var wait func()
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		defer wait()
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -3383,7 +3385,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -3524,7 +3526,7 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, 0, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -3620,7 +3622,7 @@ func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, k
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.Header.Set("Authorization", authHeader)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -3684,7 +3686,7 @@ func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -3751,7 +3753,7 @@ func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -3933,7 +3935,7 @@ func (provider *VertexProvider) gcsListAllObjects(ctx *schemas.BifrostContext, a
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 		req.Header.Set("Authorization", authHeader)
 
-		_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		if bifrostErr != nil {
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -3982,7 +3984,7 @@ func (provider *VertexProvider) gcsDownloadObject(ctx *schemas.BifrostContext, a
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.Header.Set("Authorization", authHeader)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4199,7 +4201,7 @@ func (provider *VertexProvider) gcsFileUploadDirect(
 	req.Header.Set("Authorization", authHeader)
 	req.SetBody(buf.Bytes())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4273,7 +4275,7 @@ func (provider *VertexProvider) gcsFileUploadResumable(
 		}
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4371,7 +4373,7 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4454,7 +4456,7 @@ func (provider *VertexProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4541,7 +4543,7 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4607,7 +4609,7 @@ func (provider *VertexProvider) fileContentByKey(ctx *schemas.BifrostContext, ke
 	req.Header.Set("Authorization", authHeader)
 
 	startTime := time.Now()
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4789,7 +4791,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	}
 
 	// Make the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -5030,7 +5032,7 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	// Execute request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -5191,7 +5193,7 @@ func (provider *VertexProvider) PassthroughStream(
 		fasthttpReq.SetBody(req.Body)
 	}
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClientFor(ctx), resp)
 	startTime := time.Now()
 	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
@@ -5280,4 +5282,21 @@ func (provider *VertexProvider) PassthroughStream(
 			Finalize:            finalize,
 		},
 	), nil
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *VertexProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *VertexProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

@@ -106,7 +106,7 @@ func (provider *ElevenlabsProvider) soundGeneration(ctx *schemas.BifrostContext,
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)

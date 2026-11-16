@@ -78,6 +78,7 @@ type DatabricksProvider struct {
 	// endpoint has declined the native Responses API, so those requests go straight to
 	// chat-completion emulation. See inference.go.
 	responsesUnsupported sync.Map
+	proxied              *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewDatabricksProvider creates a new Databricks provider instance.
@@ -104,6 +105,7 @@ func NewDatabricksProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &DatabricksProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -356,4 +358,21 @@ func chatStreamOptionsFixup(model string) func(*openai.OpenAIChatRequest) *opena
 		}
 		return reqBody
 	}
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *DatabricksProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *DatabricksProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

@@ -169,7 +169,7 @@ func (provider *BedrockProvider) mantleChatCompletions(
 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		openai.BearerAuthHeader(key),
@@ -207,7 +207,7 @@ func (provider *BedrockProvider) mantleChatCompletionsStream(
 	}
 
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClientFor(ctx), url, request,
 		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -255,7 +255,7 @@ func (provider *BedrockProvider) mantleResponses(
 
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		openai.BearerAuthHeader(key),
@@ -299,7 +299,7 @@ func (provider *BedrockProvider) mantleResponsesStream(
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClientFor(ctx), url, request,
 		openai.BearerAuthHeader(key), WithMantleProject(provider.networkConfig.ExtraHeaders, MantleOpenAIProjectHeader, resolveMantleProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

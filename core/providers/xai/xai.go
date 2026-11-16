@@ -15,12 +15,13 @@ import (
 
 // xAIProvider implements the Provider interface for xAI's API.
 type XAIProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewXAIProvider creates a new xAI provider instance.
@@ -52,6 +53,7 @@ func NewXAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*XAI
 	}
 
 	return &XAIProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -73,7 +75,7 @@ func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		request,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
@@ -99,7 +101,7 @@ func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key sche
 
 	return openai.HandleOpenAIModelRetrieveRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -113,7 +115,7 @@ func (provider *XAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key sche
 func (provider *XAIProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -133,7 +135,7 @@ func (provider *XAIProvider) TextCompletion(ctx *schemas.BifrostContext, key sch
 func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+"/v1/completions",
 		request,
 		nil,
@@ -155,7 +157,7 @@ func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	response, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -182,7 +184,7 @@ func (provider *XAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key sch
 func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
@@ -237,7 +239,7 @@ func normalizeXAIChatUsage(response *schemas.BifrostChatResponse) {
 func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	response, bifrostErr := openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -261,7 +263,7 @@ func (provider *XAIProvider) Responses(ctx *schemas.BifrostContext, key schemas.
 func (provider *XAIProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -337,7 +339,7 @@ func (provider *XAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, po
 func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	response, bifrostErr := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/images/generations"),
 		request,
 		key,
@@ -473,7 +475,7 @@ func (provider *XAIProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Ke
 func (provider *XAIProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAICompactionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses/compact"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -537,4 +539,21 @@ func (provider *XAIProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Ke
 
 func (provider *XAIProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *XAIProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *XAIProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

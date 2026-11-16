@@ -17,12 +17,13 @@ import (
 
 // OllamaProvider implements the Provider interface for Ollama's API.
 type OllamaProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewOllamaProvider creates a new Ollama provider instance.
@@ -56,6 +57,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// BaseURL is optional when keys have ollama_key_config with per-key URLs
 	return &OllamaProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -102,7 +104,7 @@ func (provider *OllamaProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/models")
 	return openai.ListModelsByKey(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		key,
 		request.Unfiltered,
@@ -141,7 +143,7 @@ func (provider *OllamaProvider) ModelRetrieve(ctx *schemas.BifrostContext, key s
 
 	return openai.HandleOpenAIModelRetrieveRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/models/"+escapedModel),
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -159,7 +161,7 @@ func (provider *OllamaProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -183,7 +185,7 @@ func (provider *OllamaProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -209,7 +211,7 @@ func (provider *OllamaProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -235,7 +237,7 @@ func (provider *OllamaProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -288,7 +290,7 @@ func (provider *OllamaProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -348,7 +350,7 @@ func (provider *OllamaProvider) Decision(ctx *schemas.BifrostContext, key schema
 	}
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -586,4 +588,21 @@ func (provider *OllamaProvider) Passthrough(_ *schemas.BifrostContext, _ schemas
 
 func (provider *OllamaProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *OllamaProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *OllamaProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

@@ -350,7 +350,7 @@ func (c *bedrockRealtimeConn) signLocked(payload []byte) ([]byte, error) {
 // run performs the HTTP/2 exchange and decodes model events until the stream ends.
 func (c *bedrockRealtimeConn) run(req *http.Request, body *io.PipeReader) {
 	defer close(c.ended)
-	resp, err := c.provider.realtimeClient.Do(req)
+	resp, err := c.provider.realtimeClientFor(c.reqCtx).Do(req)
 	if err != nil {
 		if c.reqCtx.Err() == nil {
 			c.reportFailure(&schemas.BifrostError{Error: &schemas.ErrorField{Message: schemas.ErrProviderNetworkError, Error: err}})

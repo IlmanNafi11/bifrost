@@ -165,7 +165,7 @@ func (provider *SageMakerProvider) Passthrough(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewBifrostBadRequestError("invocations-response-stream is a streaming operation; use the streaming passthrough")
 	}
 
-	latency, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	latency, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), fasthttpReq, resp)
 	defer wait()
 	if bErr != nil {
 		return nil, bErr
@@ -203,7 +203,7 @@ func (provider *SageMakerProvider) PassthroughStream(ctx *schemas.BifrostContext
 
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClientFor(ctx), resp)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	startTime := time.Now()

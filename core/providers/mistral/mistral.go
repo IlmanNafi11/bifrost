@@ -27,8 +27,9 @@ type MistralProvider struct {
 	streamingClient      *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig        schemas.NetworkConfig // Network configuration including extra headers
 	customProviderConfig *schemas.CustomProviderConfig
-	sendBackRawRequest   bool // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool // Whether to include raw response in BifrostResponse
+	sendBackRawRequest   bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                              // Whether to include raw response in BifrostResponse
+	proxied              *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewMistralProvider creates a new Mistral provider instance.
@@ -65,6 +66,7 @@ func NewMistralProvider(config *schemas.ProviderConfig, logger schemas.Logger) *
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MistralProvider{
+		proxied:              providerUtils.NewProxiedClientCache(0),
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
@@ -100,7 +102,7 @@ func (provider *MistralProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -178,7 +180,7 @@ func (provider *MistralProvider) ModelRetrieve(ctx *schemas.BifrostContext, key 
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -248,7 +250,7 @@ func (provider *MistralProvider) normalizeChatRequestForConversion(request *sche
 func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		provider.normalizeChatRequestForConversion(request),
 		openai.BearerAuthHeader(key),
@@ -270,7 +272,7 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+"/v1/chat/completions",
 		provider.normalizeChatRequestForConversion(request),
 		openai.BearerAuthHeader(key),
@@ -433,7 +435,7 @@ func (provider *MistralProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	// Use the shared embedding request handler
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -492,7 +494,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 	req.SetBody(body.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -624,7 +626,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -881,7 +883,7 @@ func (provider *MistralProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, requestBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -1127,4 +1129,21 @@ func (provider *MistralProvider) Passthrough(_ *schemas.BifrostContext, _ schema
 
 func (provider *MistralProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *MistralProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *MistralProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

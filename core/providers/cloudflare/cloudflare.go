@@ -21,12 +21,13 @@ const cloudflareModelsPageSize = 100
 
 // CloudflareProvider implements the Provider interface for Cloudflare Workers AI.
 type CloudflareProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewCloudflareProvider creates a new Cloudflare provider instance.
@@ -58,6 +59,7 @@ func NewCloudflareProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &CloudflareProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -109,7 +111,7 @@ func (provider *CloudflareProvider) listModelsByKey(ctx *schemas.BifrostContext,
 			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		totalLatency += latency
 		if bifrostErr != nil {
 			wait()
@@ -180,7 +182,7 @@ func (provider *CloudflareProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		accountURL+providerUtils.GetPathFromContext(ctx, "/ai/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -205,7 +207,7 @@ func (provider *CloudflareProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	}
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		accountURL+providerUtils.GetPathFromContext(ctx, "/ai/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -258,7 +260,7 @@ func (provider *CloudflareProvider) Embedding(ctx *schemas.BifrostContext, key s
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		accountURL+providerUtils.GetPathFromContext(ctx, "/ai/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -308,7 +310,7 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 	}
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -351,4 +353,21 @@ func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key sc
 	}
 
 	return bifrostResp, nil
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *CloudflareProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *CloudflareProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

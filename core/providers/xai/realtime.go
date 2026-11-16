@@ -122,7 +122,7 @@ func (provider *XAIProvider) CreateRealtimeClientSecret(ctx *schemas.BifrostCont
 		req.Header.Set(name, value)
 	}
 	req.SetBody(body)
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr

@@ -40,6 +40,7 @@ type githubCopilotProvider struct {
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewGithubCopilotProvider creates a new GitHub Copilot provider instance.
@@ -87,6 +88,7 @@ func NewGithubCopilotProvider(config *schemas.ProviderConfig, logger schemas.Log
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &githubCopilotProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -133,7 +135,7 @@ func (p *githubCopilotProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 	return openai.ListModelsByKey(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/models"),
 		key,
 		request.Unfiltered,
@@ -191,7 +193,7 @@ func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		response, bErr := anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			p.client,
+			p.clientFor(ctx),
 			creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			p.anthropicBuildConfig(false, false),
@@ -205,7 +207,7 @@ func (p *githubCopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		buildAuthHeaders(creds, chatRequestHasImageContent(request)),
@@ -234,7 +236,7 @@ func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 		stream, bErr := anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			p.streamingClient,
+			p.streamingClientFor(ctx),
 			creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			jsonData,
 			buildAuthHeaders(creds, chatRequestHasImageContent(request)),
@@ -255,7 +257,7 @@ func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		p.streamingClient,
+		p.streamingClientFor(ctx),
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		buildAuthHeaders(creds, chatRequestHasImageContent(request)),
@@ -285,7 +287,7 @@ func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 		response, bErr := anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			p.client,
+			p.clientFor(ctx),
 			creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			p.anthropicBuildConfig(false, true),
@@ -313,7 +315,7 @@ func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
 		buildAuthHeaders(creds, responsesRequestHasImageContent(request)),
@@ -341,7 +343,7 @@ func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		}
 		stream, bErr := anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			p.streamingClient,
+			p.streamingClientFor(ctx),
 			creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			jsonData,
 			buildAuthHeaders(creds, responsesRequestHasImageContent(request)),
@@ -373,7 +375,7 @@ func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		p.streamingClient,
+		p.streamingClientFor(ctx),
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
 		buildAuthHeaders(creds, responsesRequestHasImageContent(request)),
@@ -402,7 +404,7 @@ func (p *githubCopilotProvider) Embedding(ctx *schemas.BifrostContext, key schem
 
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		p.client,
+		p.clientFor(ctx),
 		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/embeddings"),
 		request,
 		buildAuthHeaders(creds, false),
@@ -634,4 +636,21 @@ func (p *githubCopilotProvider) Passthrough(_ *schemas.BifrostContext, _ schemas
 // PassthroughStream is not supported by GitHub Copilot.
 func (p *githubCopilotProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, p.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (p *githubCopilotProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if p.proxied == nil {
+		return p.client
+	}
+	return p.proxied.Unary(ctx, p.client, p.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (p *githubCopilotProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if p.proxied == nil {
+		return p.streamingClient
+	}
+	return p.proxied.Streaming(ctx, p.streamingClient, p.logger)
 }

@@ -234,7 +234,7 @@ func (provider *GeminiProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.SetBody(jsonBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -296,7 +296,7 @@ func (provider *GeminiProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	req.Header.SetContentType("application/json")
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -366,7 +366,7 @@ func (provider *GeminiProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	req.Header.SetContentType("application/json")
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -467,7 +467,7 @@ func (provider *GeminiProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.SetBody(jsonBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -549,7 +549,7 @@ func (provider *GeminiProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	req.Header.SetMethod(http.MethodDelete)
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr

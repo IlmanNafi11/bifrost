@@ -16,11 +16,12 @@ import (
 
 // RunwayProvider implements the Provider interface for Runway's API.
 type RunwayProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for API requests
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for API requests
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewRunwayProvider creates a new Runway provider instance.
@@ -52,6 +53,7 @@ func NewRunwayProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &RunwayProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
@@ -183,7 +185,7 @@ func (provider *RunwayProvider) HandleRunwayImageTask(ctx *schemas.BifrostContex
 
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -293,7 +295,7 @@ func (provider *RunwayProvider) retrieveRunwayTask(ctx *schemas.BifrostContext, 
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr
@@ -399,7 +401,7 @@ func (provider *RunwayProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -482,7 +484,7 @@ func (provider *RunwayProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -571,7 +573,7 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI(videoUrl)
 	req.Header.SetMethod("GET")
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -639,7 +641,7 @@ func (provider *RunwayProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -799,4 +801,13 @@ func (provider *RunwayProvider) Passthrough(_ *schemas.BifrostContext, _ schemas
 
 func (provider *RunwayProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *RunwayProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
 }

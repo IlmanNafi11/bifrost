@@ -21,12 +21,13 @@ import (
 
 // BytePlusProvider implements the Provider interface for BytePlus ModelArk's API.
 type BytePlusProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewBytePlusProvider creates a new BytePlus ModelArk provider instance.
@@ -60,6 +61,7 @@ func NewBytePlusProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &BytePlusProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -110,7 +112,7 @@ func (provider *BytePlusProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/api/v3/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -130,7 +132,7 @@ func (provider *BytePlusProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/api/v3/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -156,7 +158,7 @@ func (provider *BytePlusProvider) Responses(ctx *schemas.BifrostContext, key sch
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/api/v3/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -176,7 +178,7 @@ func (provider *BytePlusProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/api/v3/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -218,7 +220,7 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -413,7 +415,7 @@ func (provider *BytePlusProvider) VideoDownload(ctx *schemas.BifrostContext, key
 	req.SetRequestURI(*task.Videos[0].URL)
 	req.Header.SetMethod(http.MethodGet)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -608,7 +610,7 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 	req.SetBody(jsonData)
 
 	startTime := time.Now()
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -921,4 +923,21 @@ func (provider *BytePlusProvider) Passthrough(_ *schemas.BifrostContext, _ schem
 // PassthroughStream is not supported by the BytePlus provider.
 func (provider *BytePlusProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *BytePlusProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *BytePlusProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

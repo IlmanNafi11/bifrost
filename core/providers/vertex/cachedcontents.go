@@ -188,7 +188,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	}
 	req.SetBody(jsonBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -260,7 +260,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 		return nil, 0, authErr
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -336,7 +336,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 		return nil, 0, authErr
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -443,7 +443,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	}
 	req.SetBody(jsonBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -531,7 +531,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 		return nil, 0, authErr
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr

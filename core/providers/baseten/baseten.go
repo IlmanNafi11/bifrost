@@ -24,12 +24,13 @@ const DefaultBaseURL = "https://inference.baseten.co/v1"
 
 // BasetenProvider implements the Provider interface for Baseten.
 type BasetenProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewBasetenProvider creates a new Baseten provider instance.
@@ -57,6 +58,7 @@ func NewBasetenProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &BasetenProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -116,7 +118,7 @@ func (provider *BasetenProvider) dedicatedURLOrError(ctx *schemas.BifrostContext
 func (provider *BasetenProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		request,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models"),
 		keys,
@@ -146,7 +148,7 @@ func (provider *BasetenProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -170,7 +172,7 @@ func (provider *BasetenProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -208,7 +210,7 @@ func (provider *BasetenProvider) Responses(ctx *schemas.BifrostContext, key sche
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -237,7 +239,7 @@ func (provider *BasetenProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -265,7 +267,7 @@ func (provider *BasetenProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -287,7 +289,7 @@ func (provider *BasetenProvider) Transcription(ctx *schemas.BifrostContext, key 
 	}
 	return openai.HandleOpenAITranscriptionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/audio/transcriptions"),
 		request,
 		key,
@@ -341,7 +343,7 @@ func (provider *BasetenProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	}
 	return openai.HandleOpenAIImageGenerationRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/images/generations"),
 		request,
 		key,
@@ -532,4 +534,21 @@ func (provider *BasetenProvider) Passthrough(_ *schemas.BifrostContext, _ schema
 // PassthroughStream is not supported by the Baseten provider.
 func (provider *BasetenProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *BasetenProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *BasetenProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

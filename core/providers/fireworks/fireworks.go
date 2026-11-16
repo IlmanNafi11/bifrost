@@ -15,13 +15,14 @@ import (
 
 // FireworksProvider implements the Provider interface for Fireworks AI's API.
 type FireworksProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
-	disableStore        bool                  // Whether to force store=false on outgoing Responses API requests
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	disableStore        bool                              // Whether to force store=false on outgoing Responses API requests
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewFireworksProvider creates a new Fireworks AI provider instance.
@@ -53,6 +54,7 @@ func NewFireworksProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &FireworksProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -101,7 +103,7 @@ func (provider *FireworksProvider) listModelsByKey(_ *schemas.BifrostContext, ke
 func (provider *FireworksProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -119,7 +121,7 @@ func (provider *FireworksProvider) TextCompletion(ctx *schemas.BifrostContext, k
 func (provider *FireworksProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -142,7 +144,7 @@ func (provider *FireworksProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -160,7 +162,7 @@ func (provider *FireworksProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -193,7 +195,7 @@ func (provider *FireworksProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
@@ -213,7 +215,7 @@ func (provider *FireworksProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -239,7 +241,7 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -262,7 +264,7 @@ func (provider *FireworksProvider) Responses(ctx *schemas.BifrostContext, key sc
 
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -293,7 +295,7 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
@@ -317,7 +319,7 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -341,7 +343,7 @@ func (provider *FireworksProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 func (provider *FireworksProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -573,4 +575,21 @@ func (provider *FireworksProvider) Passthrough(_ *schemas.BifrostContext, _ sche
 // PassthroughStream is not supported by the Fireworks AI provider.
 func (provider *FireworksProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *FireworksProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *FireworksProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

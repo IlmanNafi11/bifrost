@@ -171,7 +171,7 @@ func (provider *AzureProvider) ExchangeRealtimeWebRTCSDP(
 	}
 	req.SetBody(bodyBuf.Bytes())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return "", bifrostErr
@@ -278,7 +278,7 @@ func (provider *AzureProvider) CreateRealtimeClientSecret(
 	}
 	req.SetBody(normalizedBody)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr

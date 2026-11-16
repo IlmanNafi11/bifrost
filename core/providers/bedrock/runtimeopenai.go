@@ -101,7 +101,7 @@ func (provider *BedrockProvider) runtimeResponses(
 	// bedrock-runtime is not project-scoped, so no project header is sent here.
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		openai.BearerAuthHeader(key),
@@ -141,7 +141,7 @@ func (provider *BedrockProvider) runtimeResponsesStream(
 	}
 
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClientFor(ctx), url, request,
 		openai.BearerAuthHeader(key), extraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -181,7 +181,7 @@ func (provider *BedrockProvider) runtimeChatCompletions(
 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		openai.BearerAuthHeader(key),
@@ -221,7 +221,7 @@ func (provider *BedrockProvider) runtimeChatCompletionsStream(
 	}
 
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClientFor(ctx), url, request,
 		openai.BearerAuthHeader(key), extraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

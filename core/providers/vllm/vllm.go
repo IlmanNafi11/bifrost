@@ -20,12 +20,13 @@ import (
 
 // VLLMProvider implements the Provider interface for vLLM's OpenAI-compatible API.
 type VLLMProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewVLLMProvider creates a new vLLM provider instance.
@@ -51,6 +52,7 @@ func NewVLLMProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VL
 
 	// BaseURL is optional when keys have vllm_key_config with per-key URLs
 	return &VLLMProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -100,7 +102,7 @@ func (provider *VLLMProvider) listModelsByKey(ctx *schemas.BifrostContext, key s
 	url := baseURL + providerUtils.GetPathFromContext(ctx, "/v1/models")
 	return openai.ListModelsByKey(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		key,
 		request.Unfiltered,
@@ -132,7 +134,7 @@ func (provider *VLLMProvider) TextCompletion(ctx *schemas.BifrostContext, key sc
 	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -155,7 +157,7 @@ func (provider *VLLMProvider) TextCompletionStream(ctx *schemas.BifrostContext, 
 	}
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -183,7 +185,7 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -202,7 +204,7 @@ func (provider *VLLMProvider) ChatCompletion(ctx *schemas.BifrostContext, key sc
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -237,7 +239,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
@@ -258,7 +260,7 @@ func (provider *VLLMProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -287,7 +289,7 @@ func (provider *VLLMProvider) Embedding(ctx *schemas.BifrostContext, key schemas
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -311,7 +313,7 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -331,7 +333,7 @@ func (provider *VLLMProvider) Responses(ctx *schemas.BifrostContext, key schemas
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -367,7 +369,7 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
@@ -388,7 +390,7 @@ func (provider *VLLMProvider) ResponsesStream(ctx *schemas.BifrostContext, postH
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -451,7 +453,7 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, nil, nil, 0, latency, bifrostErr
@@ -560,7 +562,7 @@ func (provider *VLLMProvider) Transcription(ctx *schemas.BifrostContext, key sch
 	}
 	return openai.HandleOpenAITranscriptionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
 		request,
 		key,
@@ -628,7 +630,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 
 		startTime := time.Now()
 		// Make the request
-		err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+		err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 		latency := time.Since(startTime)
 		if err != nil {
 			defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -913,7 +915,7 @@ func (provider *VLLMProvider) CountTokens(ctx *schemas.BifrostContext, key schem
 	}
 	return anthropic.HandleAnthropicCountTokensRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL+providerUtils.GetPathFromContext(ctx, "/v1/messages/count_tokens"),
 		request,
 		anthropic.AnthropicRequestBuildConfig{
@@ -991,4 +993,21 @@ func (provider *VLLMProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.K
 
 func (provider *VLLMProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *VLLMProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *VLLMProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

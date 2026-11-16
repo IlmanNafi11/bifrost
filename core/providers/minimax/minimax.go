@@ -24,12 +24,13 @@ import (
 
 // MiniMaxProvider implements the Provider interface for MiniMax's API.
 type MiniMaxProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewMiniMaxProvider creates a new MiniMax provider instance.
@@ -61,6 +62,7 @@ func NewMiniMaxProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MiniMaxProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -79,7 +81,7 @@ func (provider *MiniMaxProvider) GetProviderKey() schemas.ModelProvider {
 func (provider *MiniMaxProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		request,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
@@ -105,7 +107,7 @@ func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		applyMiniMaxReasoningSplit(request),
 		openai.BearerAuthHeader(key),
@@ -125,7 +127,7 @@ func (provider *MiniMaxProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		applyMiniMaxReasoningSplit(request),
 		openai.BearerAuthHeader(key),
@@ -194,7 +196,7 @@ func (provider *MiniMaxProvider) doMiniMaxRequest(ctx *schemas.BifrostContext, k
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -371,7 +373,7 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	req.SetRequestURI(*task.Videos[0].URL)
 	req.Header.SetMethod(http.MethodGet)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -834,7 +836,7 @@ func (provider *MiniMaxProvider) doMiniMaxMultipartRequest(ctx *schemas.BifrostC
 	}
 	req.SetBody(body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -883,7 +885,7 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 	req.SetBody(body)
 
 	startTime := time.Now()
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1011,4 +1013,21 @@ func setMiniMaxFinalStreamFields(resp *schemas.BifrostResponse, total time.Durat
 	if sendBackRawRequest {
 		providerUtils.ParseAndSetRawRequest(ef, rawRequest)
 	}
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *MiniMaxProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *MiniMaxProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

@@ -47,9 +47,10 @@ type AzureProvider struct {
 	networkConfig   schemas.NetworkConfig // Network configuration including extra headers
 	authHTTPClient  *http.Client          // net/http client for Entra ID token calls, routed through proxy_config like the fasthttp clients
 
-	credentials         sync.Map // map of tenant ID:client ID to azcore.TokenCredential
-	sendBackRawRequest  bool     // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool     // Whether to include raw response in BifrostResponse
+	credentials         sync.Map                          // map of tenant ID:client ID to azcore.TokenCredential
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 func (p *AzureProvider) getOrCreateAuth(
@@ -205,6 +206,7 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	return &AzureProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -271,7 +273,7 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 	}
 
 	// Send the request and measure latency
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -352,7 +354,7 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		fmt.Sprintf("%s/openai/v1/completions", endpoint),
 		request,
 		authHeader,
@@ -384,7 +386,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext,
 
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		url,
 		request,
 		authHeader,
@@ -420,7 +422,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		authHeader["anthropic-version"] = resolveAnthropicVersion(ctx)
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			fmt.Sprintf("%s/anthropic/v1/messages", endpoint),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -445,7 +447,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		azureChatCompletionURL(ctx, endpoint, request),
 		request,
 		authHeader,
@@ -492,7 +494,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		// Use shared streaming logic from Anthropic
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			jsonData,
 			authHeader,
@@ -518,7 +520,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			request,
 			authHeader,
@@ -558,7 +560,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		authHeader["anthropic-version"] = resolveAnthropicVersion(ctx)
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			fmt.Sprintf("%s/anthropic/v1/messages", endpoint),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -602,7 +604,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		fmt.Sprintf("%s/%s", endpoint, path),
 		request,
 		authHeader,
@@ -647,7 +649,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		// Use shared streaming logic from Anthropic
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			jsonData,
 			authHeader,
@@ -685,7 +687,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		// Use shared streaming logic from OpenAI
 		return openai.HandleOpenAIResponsesStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			url,
 			request,
 			authHeader,
@@ -720,7 +722,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		fmt.Sprintf("%s/openai/v1/embeddings", endpoint),
 		request,
 		authHeader,
@@ -754,7 +756,7 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 
 	response, err := openai.HandleOpenAISpeechRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		request,
 		key,
@@ -807,7 +809,7 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	if isOpenAIDecisionDeployment(ctx, canonicalModel) {
 		return openai.HandleOpenAIDecisionRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			endpoint+providerUtils.GetPathFromContext(ctx, azureOpenAIDecisionPath),
 			request,
 			authHeaders,
@@ -820,7 +822,7 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 	}
 	return typesafe.HandleTypesafeDecisionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		endpoint+providerUtils.GetPathFromContext(ctx, azureDecisionPath),
 		request,
 		typesafe.ToTypesafeDecisionRequest,
@@ -921,7 +923,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 
 	startTime := time.Now()
 	// Make the request
-	requestErr := providerUtils.DoStreamingRequest(ctx, provider.client, req, resp)
+	requestErr := providerUtils.DoStreamingRequest(ctx, provider.clientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if requestErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1204,7 +1206,7 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 
 	response, err := openai.HandleOpenAITranscriptionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		upstreamRequest,
 		key,
@@ -1283,7 +1285,7 @@ func (provider *AzureProvider) ImageGeneration(ctx *schemas.BifrostContext, key 
 
 	response, err := openai.HandleOpenAIImageGenerationRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		fmt.Sprintf("%s/openai/v1/images/generations", endpoint),
 		request,
 		key,
@@ -1326,7 +1328,7 @@ func (provider *AzureProvider) ImageGenerationStream(
 	// Azure is OpenAI-compatible
 	return openai.HandleOpenAIImageGenerationStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		url,
 		request,
 		authHeader,
@@ -1359,7 +1361,7 @@ func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schema
 	url := fmt.Sprintf("%s/openai/v1/images/edits", endpoint)
 	response, err := openai.HandleOpenAIImageEditRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		request,
 		key,
@@ -1394,7 +1396,7 @@ func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, post
 	// Azure is OpenAI-compatible
 	return openai.HandleOpenAIImageEditStreamRequest(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		url,
 		request,
 		authHeader,
@@ -1435,7 +1437,7 @@ func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key 
 
 	response, bifrostErr := openai.HandleOpenAIVideoGenerationRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		request,
 		key,
@@ -1477,7 +1479,7 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 
 	return openai.HandleOpenAIVideoRetrieveRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, escapedVideoID),
 		request,
 		key,
@@ -1534,7 +1536,7 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1598,7 +1600,7 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 
 	response, bifrostErr := openai.HandleOpenAIVideoDeleteRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		videoID,
 		key,
@@ -1633,7 +1635,7 @@ func (provider *AzureProvider) VideoList(ctx *schemas.BifrostContext, key schema
 
 	response, bifrostErr := openai.HandleOpenAIVideoListRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		baseURL,
 		request,
 		key,
@@ -1724,7 +1726,7 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 	req.SetBody(buf.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1816,7 +1818,7 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1918,7 +1920,7 @@ func (provider *AzureProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		if bifrostErr != nil {
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2011,7 +2013,7 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		if bifrostErr != nil {
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2132,7 +2134,7 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		if bifrostErr != nil {
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2284,7 +2286,7 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -2374,7 +2376,7 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2469,7 +2471,7 @@ func (provider *AzureProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys [
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		if bifrostErr != nil {
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2563,7 +2565,7 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		if bifrostErr != nil {
 			wait()
 			fasthttp.ReleaseRequest(req)
@@ -2740,7 +2742,7 @@ func (provider *AzureProvider) doGetBlob(ctx *schemas.BifrostContext, blobURL st
 		req.Header.Set("x-ms-version", "2020-04-08")
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, 0, bifrostErr
@@ -2855,7 +2857,7 @@ func (provider *AzureProvider) Compaction(ctx *schemas.BifrostContext, key schem
 	}
 	return openai.HandleOpenAICompactionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		fmt.Sprintf("%s/%s", endpoint, path),
 		request,
 		authHeader,
@@ -2933,7 +2935,7 @@ func (provider *AzureProvider) ContainerCreate(ctx *schemas.BifrostContext, key 
 		req.Header.Set(k, v)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3031,7 +3033,7 @@ func (provider *AzureProvider) ContainerRetrieve(ctx *schemas.BifrostContext, ke
 			req.Header.Set(k, v)
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3142,7 +3144,7 @@ func (provider *AzureProvider) ContainerDelete(ctx *schemas.BifrostContext, keys
 			req.Header.Set(k, v)
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3250,7 +3252,7 @@ func (provider *AzureProvider) ContainerFileCreate(ctx *schemas.BifrostContext, 
 		req.Header.Set(k, v)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3360,7 +3362,7 @@ func (provider *AzureProvider) ContainerFileList(ctx *schemas.BifrostContext, ke
 			req.Header.Set(k, v)
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		defer wait()
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -3483,7 +3485,7 @@ func (provider *AzureProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext
 			req.Header.Set(k, v)
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3596,7 +3598,7 @@ func (provider *AzureProvider) ContainerFileContent(ctx *schemas.BifrostContext,
 			req.Header.Set(k, v)
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3694,7 +3696,7 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 			req.Header.Set(k, v)
 		}
 
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3786,7 +3788,7 @@ func (provider *AzureProvider) Passthrough(
 
 	fasthttpReq.SetBody(req.Body)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3860,7 +3862,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	fasthttpReq.SetBody(req.Body)
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClientFor(ctx), resp)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	startTime := time.Now()
@@ -3982,4 +3984,21 @@ func extractAzurePassthroughUsage(method, path string, reqBody, body []byte, mod
 		return anthropic.ExtractAnthropicPassthroughUsage(path, reqBody, body)
 	}
 	return openai.ExtractOpenAIPassthroughUsage(method, path, reqBody, body)
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (p *AzureProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if p.proxied == nil {
+		return p.client
+	}
+	return p.proxied.Unary(ctx, p.client, p.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (p *AzureProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if p.proxied == nil {
+		return p.streamingClient
+	}
+	return p.proxied.Streaming(ctx, p.streamingClient, p.logger)
 }

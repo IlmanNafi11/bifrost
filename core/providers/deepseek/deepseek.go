@@ -16,12 +16,13 @@ import (
 
 // DeepSeekProvider implements the Provider interface for DeepSeek's API.
 type DeepSeekProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger              schemas.Logger                    // Logger for provider operations
+	client              *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient     *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig       schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest  bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                              // Whether to include raw response in BifrostResponse
+	proxied             *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewDeepSeekProvider creates a new DeepSeek provider instance.
@@ -53,6 +54,7 @@ func NewDeepSeekProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &DeepSeekProvider{
+		proxied:             providerUtils.NewProxiedClientCache(0),
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
@@ -223,7 +225,7 @@ func (provider *DeepSeekProvider) GetProviderKey() schemas.ModelProvider {
 func (provider *DeepSeekProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		request,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models"),
 		keys,
@@ -241,7 +243,7 @@ func (provider *DeepSeekProvider) TextCompletion(ctx *schemas.BifrostContext, ke
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	resp, bifrostErr := openai.HandleOpenAITextCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -266,7 +268,7 @@ func (provider *DeepSeekProvider) TextCompletionStream(ctx *schemas.BifrostConte
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/beta/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -300,7 +302,7 @@ func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 		}
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -319,7 +321,7 @@ func (provider *DeepSeekProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 	request = applyDeepSeekThinkingCompatibility(request)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -355,7 +357,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
@@ -377,7 +379,7 @@ func (provider *DeepSeekProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	request = applyDeepSeekThinkingCompatibility(request)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
@@ -406,7 +408,7 @@ func (provider *DeepSeekProvider) Responses(ctx *schemas.BifrostContext, key sch
 		}
 		resp, bifrostErr := anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -454,7 +456,7 @@ func (provider *DeepSeekProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.streamingClient,
+			provider.streamingClientFor(ctx),
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages"),
 			jsonData,
 			provider.anthropicHeaders(key),
@@ -641,7 +643,7 @@ func (provider *DeepSeekProvider) BatchResults(_ *schemas.BifrostContext, _ []sc
 func (provider *DeepSeekProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	return anthropic.HandleAnthropicCountTokensRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/anthropic/v1/messages/count_tokens"),
 		request,
 		anthropic.AnthropicRequestBuildConfig{
@@ -718,4 +720,21 @@ func (provider *DeepSeekProvider) Passthrough(_ *schemas.BifrostContext, _ schem
 
 func (provider *DeepSeekProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *DeepSeekProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *DeepSeekProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

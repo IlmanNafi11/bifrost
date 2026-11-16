@@ -75,7 +75,7 @@ func (provider *SageMakerProvider) listEndpointsPage(ctx *schemas.BifrostContext
 		req.Header.Set(name, values[0])
 	}
 	req.SetBody(body)
-	_, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bErr != nil {
 		return nil, bErr

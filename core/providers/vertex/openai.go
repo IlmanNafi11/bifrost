@@ -75,7 +75,7 @@ func (provider *VertexProvider) openAIChatCompletion(ctx *schemas.BifrostContext
 		return nil, err
 	}
 	return openai.HandleOpenAIChatCompletionRequest(
-		ctx, provider.client, url, request, headers, provider.networkConfig.ExtraHeaders,
+		ctx, provider.clientFor(ctx), url, request, headers, provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(), nil, provider.openAIEndpointError(key), nil, provider.logger,
@@ -92,7 +92,7 @@ func (provider *VertexProvider) openAIChatCompletionStream(ctx *schemas.BifrostC
 		return nil, err
 	}
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.streamingClient, url, request, headers, provider.networkConfig.ExtraHeaders,
+		ctx, provider.streamingClientFor(ctx), url, request, headers, provider.networkConfig.ExtraHeaders,
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),

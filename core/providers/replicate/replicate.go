@@ -30,6 +30,7 @@ type ReplicateProvider struct {
 	sendBackRawRequest   bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                  // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig
+	proxied              *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewReplicateProvider creates a new Replicate provider instance.
@@ -61,6 +62,7 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	}
 
 	return &ReplicateProvider{
+		proxied:              providerUtils.NewProxiedClientCache(0),
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
@@ -306,7 +308,7 @@ func pollPrediction(
 // Deployments are account-specific, so this needs to be called per key.
 func (provider *ReplicateProvider) listDeploymentsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
-	client := provider.client
+	client := provider.clientFor(ctx)
 	extraHeaders := provider.networkConfig.ExtraHeaders
 
 	if !useDeploymentsEndpoint(ctx, key) {
@@ -470,7 +472,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	// create prediction
 	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -488,7 +490,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	if !isSync && !isTerminalStatus(prediction.Status) {
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			prediction.URLs.Get,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -563,7 +565,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	// Create prediction
 	prediction, _, latency, _, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -588,7 +590,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClientFor(ctx), streamURL, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -822,7 +824,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	// create prediction
 	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -840,7 +842,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	if !isSync && !isTerminalStatus(prediction.Status) {
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			prediction.URLs.Get,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -915,7 +917,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	// Create prediction
 	prediction, _, latency, _, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -940,7 +942,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClientFor(ctx), streamURL, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -1188,7 +1190,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	// create prediction
 	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -1206,7 +1208,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	if !isSync && !isTerminalStatus(prediction.Status) {
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			prediction.URLs.Get,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -1276,7 +1278,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	// Create prediction
 	prediction, _, latency, _, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -1320,7 +1322,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Make the streaming request
 	startTime = time.Now()
-	streamErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	streamErr := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency = time.Since(startTime)
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -1799,7 +1801,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	// Create prediction with appropriate mode
 	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -1817,7 +1819,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	if !isSync && !isTerminalStatus(prediction.Status) {
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			prediction.URLs.Get,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -1901,7 +1903,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	// Create prediction
 	prediction, _, latency, _, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -1934,7 +1936,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClientFor(ctx), streamURL, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2227,7 +2229,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	// Create prediction with appropriate mode
 	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -2245,7 +2247,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	if !isSync && !isTerminalStatus(prediction.Status) {
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
-			provider.client,
+			provider.clientFor(ctx),
 			prediction.URLs.Get,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
@@ -2328,7 +2330,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	// Create prediction
 	prediction, _, latency, _, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -2361,7 +2363,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClient, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(ctx, provider.streamingClientFor(ctx), streamURL, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2636,7 +2638,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	// Create prediction with appropriate mode
 	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		jsonData,
 		key,
 		providerUtils.GetPathFromContext(ctx, predictionURL),
@@ -2706,7 +2708,7 @@ func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, ke
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2803,7 +2805,7 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2993,7 +2995,7 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	req.SetBody(buf.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3086,7 +3088,7 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3193,7 +3195,7 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3274,7 +3276,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		}
 
 		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 		wait()
 		if bifrostErr != nil {
 			fasthttp.ReleaseRequest(req)
@@ -3429,4 +3431,21 @@ func (provider *ReplicateProvider) Passthrough(_ *schemas.BifrostContext, _ sche
 
 func (provider *ReplicateProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *ReplicateProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *ReplicateProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

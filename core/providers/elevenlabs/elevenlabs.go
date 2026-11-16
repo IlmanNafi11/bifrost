@@ -20,13 +20,14 @@ import (
 )
 
 type ElevenlabsProvider struct {
-	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
-	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
-	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
+	logger               schemas.Logger                    // Logger for provider operations
+	client               *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig        schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest   bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                              // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig     // Custom provider config
+	proxied              *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewElevenlabsProvider creates a new Elevenlabs provider instance.
@@ -58,6 +59,7 @@ func NewElevenlabsProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &ElevenlabsProvider{
+		proxied:              providerUtils.NewProxiedClientCache(0),
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
@@ -95,7 +97,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -241,7 +243,7 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -379,7 +381,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 	// Make request
 	startTime := time.Now()
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -585,7 +587,7 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	}
 	req.SetBody(body.Bytes())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1015,4 +1017,21 @@ func (provider *ElevenlabsProvider) Passthrough(_ *schemas.BifrostContext, _ sch
 
 func (provider *ElevenlabsProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *ElevenlabsProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *ElevenlabsProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

@@ -302,7 +302,7 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr

@@ -26,13 +26,14 @@ const (
 )
 
 type GeminiProvider struct {
-	logger               schemas.Logger                // Logger for provider operations
-	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
-	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
-	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
+	logger               schemas.Logger                    // Logger for provider operations
+	client               *fasthttp.Client                  // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client                  // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	networkConfig        schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest   bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                              // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig     // Custom provider config
+	proxied              *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // setGeminiAuthHeader authenticates the request with apiKey and strips any
@@ -101,6 +102,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &GeminiProvider{
+		proxied:              providerUtils.NewProxiedClientCache(0),
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
@@ -149,7 +151,7 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	}
 
 	// Send the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -222,7 +224,7 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -314,7 +316,7 @@ func (provider *GeminiProvider) ModelRetrieve(ctx *schemas.BifrostContext, key s
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -460,7 +462,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	// Use shared Gemini streaming logic
 	return HandleGeminiChatCompletionStream(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
 		jsonData,
 		headers,
@@ -869,7 +871,7 @@ func (provider *GeminiProvider) responsesWithLargeResponseDetection(
 	setGeminiRequestBody(req, bodyReader, bodySize, jsonData)
 
 	// Make request
-	streamingClient := providerUtils.BuildLargeResponseClient(provider.client, responseThreshold)
+	streamingClient := providerUtils.BuildLargeResponseClient(provider.clientFor(ctx), responseThreshold)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, streamingClient, req, resp)
 	if bifrostErr != nil {
 		wait()
@@ -997,7 +999,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 	return HandleGeminiResponsesStream(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
 		jsonData,
 		headers,
@@ -1400,7 +1402,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	// Send the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		wait()
@@ -1590,7 +1592,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 	return HandleGeminiSpeechStream(
 		ctx,
-		provider.streamingClient,
+		provider.streamingClientFor(ctx),
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"),
 		jsonBody,
 		headers,
@@ -1942,7 +1944,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 	startTime := time.Now()
 	// Make the request
-	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClientFor(ctx), req, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -2241,7 +2243,7 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Send the request with optional large response streaming
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -2330,7 +2332,7 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 		setGeminiAuthHeader(req, key.Value.GetValue())
 
-		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.clientFor(ctx), resp)
 		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		defer wait()
 		if bifrostErr != nil {
@@ -2481,7 +2483,7 @@ func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2578,7 +2580,7 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	req.Header.SetMethod(http.MethodGet)
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -2666,7 +2668,7 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		setGeminiAuthHeader(req, key.Value.GetValue())
 		var bifrostErr *schemas.BifrostError
 		var wait func()
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, req, resp, 5)
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.clientFor(ctx), req, resp, 5)
 		defer wait()
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -2831,7 +2833,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -2954,7 +2956,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 	req.Header.SetContentType("application/json")
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -3121,7 +3123,7 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	req.Header.SetContentType("application/json")
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3243,7 +3245,7 @@ func (provider *GeminiProvider) batchCancelByKey(ctx *schemas.BifrostContext, ke
 	req.Header.SetContentType("application/json")
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3323,7 +3325,7 @@ func (provider *GeminiProvider) batchDeleteByKey(ctx *schemas.BifrostContext, ke
 	req.Header.SetMethod(http.MethodDelete)
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3528,7 +3530,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	req.Header.SetContentType("application/json")
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3727,7 +3729,7 @@ func (provider *GeminiProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	req.SetBody(buf.Bytes())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3818,7 +3820,7 @@ func (provider *GeminiProvider) fileListByKey(ctx *schemas.BifrostContext, key s
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
@@ -3979,7 +3981,7 @@ func (provider *GeminiProvider) fileRetrieveByKey(ctx *schemas.BifrostContext, k
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4090,7 +4092,7 @@ func (provider *GeminiProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -4212,7 +4214,7 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -4353,9 +4355,9 @@ func (provider *GeminiProvider) Passthrough(
 	// Google redirects file downloads to /download/v1beta, and only Bifrost holds
 	// the API key that the redirect target requires — so follow it here.
 	if req.Method == http.MethodGet && strings.Contains(req.Path, ":download") {
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, fasthttpReq, resp, 5)
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.clientFor(ctx), fasthttpReq, resp, 5)
 	} else {
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), fasthttpReq, resp)
 	}
 	defer wait()
 	if bifrostErr != nil {
@@ -4437,7 +4439,7 @@ func (provider *GeminiProvider) PassthroughStream(
 
 	fasthttpReq.SetBody(req.Body)
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClientFor(ctx), resp)
 	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
@@ -4492,4 +4494,21 @@ func (provider *GeminiProvider) PassthroughStream(
 		params.Finalize = observer.Finalize
 	}
 	return providerUtils.StreamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream, params), nil
+}
+
+// clientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *GeminiProvider) clientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.client
+	}
+	return provider.proxied.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *GeminiProvider) streamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.streamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.streamingClient, provider.logger)
 }

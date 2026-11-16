@@ -48,7 +48,7 @@ func (provider *BedrockMantleProvider) CountTokens(ctx *schemas.BifrostContext, 
 	// ExcludeFields so they are removed on the typed path too.
 	return anthropic.HandleAnthropicCountTokensRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		anthropic.AnthropicRequestBuildConfig{

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
@@ -57,7 +58,7 @@ func NewProxiedClientCache(cap int) *ProxiedClientCache {
 
 // Unary returns the unary client for the proxy picked on ctx, or base when the
 // attempt is unbound.
-func (c *ProxiedClientCache) Unary(ctx *schemas.BifrostContext, base *fasthttp.Client, logger schemas.Logger) *fasthttp.Client {
+func (c *ProxiedClientCache) Unary(ctx context.Context, base *fasthttp.Client, logger schemas.Logger) *fasthttp.Client {
 	entry := c.entryFor(ctx, base, logger)
 	if entry == nil {
 		return base
@@ -67,7 +68,7 @@ func (c *ProxiedClientCache) Unary(ctx *schemas.BifrostContext, base *fasthttp.C
 
 // Streaming returns the streaming client for the proxy picked on ctx, or base
 // when the attempt is unbound.
-func (c *ProxiedClientCache) Streaming(ctx *schemas.BifrostContext, base *fasthttp.Client, logger schemas.Logger) *fasthttp.Client {
+func (c *ProxiedClientCache) Streaming(ctx context.Context, base *fasthttp.Client, logger schemas.Logger) *fasthttp.Client {
 	entry := c.entryFor(ctx, base, logger)
 	if entry == nil {
 		return base
@@ -78,7 +79,7 @@ func (c *ProxiedClientCache) Streaming(ctx *schemas.BifrostContext, base *fastht
 // entryFor resolves the attempt's picked proxy and returns its cache entry,
 // building it on first use. The base client is returned as a nil entry for
 // unbound attempts and for nil/no-proxy configurations.
-func (c *ProxiedClientCache) entryFor(ctx *schemas.BifrostContext, base *fasthttp.Client, logger schemas.Logger) *proxiedClientEntry {
+func (c *ProxiedClientCache) entryFor(ctx context.Context, base *fasthttp.Client, logger schemas.Logger) *proxiedClientEntry {
 	if ctx == nil || base == nil {
 		return nil
 	}

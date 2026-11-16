@@ -37,16 +37,18 @@ import (
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
 type BedrockProvider struct {
-	logger                schemas.Logger                // Logger for provider operations
-	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
-	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
-	realtimeClient        *http.Client                  // HTTP/2-only client for Nova Sonic bidirectional streams (no Timeout)
-	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
-	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
-	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
-	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
-	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
-	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
+	logger                schemas.Logger                        // Logger for provider operations
+	client                *http.Client                          // HTTP client for unary API requests (Client.Timeout bounds overall response)
+	streamingClient       *http.Client                          // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
+	realtimeClient        *http.Client                          // HTTP/2-only client for Nova Sonic bidirectional streams (no Timeout)
+	mantleClient          *fasthttp.Client                      // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
+	mantleStreamingClient *fasthttp.Client                      // fasthttp streaming client for Bedrock Mantle streaming requests
+	networkConfig         schemas.NetworkConfig                 // Network configuration including extra headers
+	customProviderConfig  *schemas.CustomProviderConfig         // Custom provider config
+	sendBackRawRequest    bool                                  // Whether to include raw request in BifrostResponse
+	sendBackRawResponse   bool                                  // Whether to include raw response in BifrostResponse
+	proxied               *providerUtils.ProxiedClientCache     // Reusable fasthttp clients for per-attempt pool proxies
+	proxiedHTTP           *providerUtils.ProxiedHTTPClientCache // Reusable net/http clients for per-attempt pool proxies
 }
 
 // assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
@@ -144,6 +146,8 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	}
 
 	return &BedrockProvider{
+		proxied:               providerUtils.NewProxiedClientCache(0),
+		proxiedHTTP:           providerUtils.NewProxiedHTTPClientCache(0),
 		logger:                logger,
 		client:                client,
 		streamingClient:       streamingClient,
@@ -445,7 +449,7 @@ func newRequestError(err error, latency time.Duration) *schemas.BifrostError {
 func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Execute the request and measure latency
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(req.Context()), req)
 	latency := time.Since(startTime)
 	if err != nil {
 		return nil, latency, nil, newRequestError(err, latency)
@@ -514,7 +518,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	}
 
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), req)
 	latency := time.Since(startTime)
 	if err != nil {
 		return nil, latency, nil, newRequestError(err, latency)
@@ -582,7 +586,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 
 	// Make the request
 	startTime := time.Now()
-	resp, respErr := providerUtils.DoHTTPRequest(provider.streamingClient, req)
+	resp, respErr := providerUtils.DoHTTPRequest(provider.streamingClientFor(ctx), req)
 	latency := time.Since(startTime)
 	if respErr != nil {
 		return nil, newRequestError(respErr, latency)
@@ -900,7 +904,7 @@ func (provider *BedrockProvider) listMantleModels(ctx *schemas.BifrostContext, k
 		return nil
 	}
 
-	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), req)
 	if err != nil {
 		provider.logger.Warn("mantle list-models request failed: %v", err)
 		return nil
@@ -981,7 +985,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	startTime := time.Now()
 
 	// Execute the request
-	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), req)
 	latency := time.Since(startTime)
 	if err != nil {
 		return nil, newRequestError(err, latency)
@@ -2961,7 +2965,7 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -3093,7 +3097,7 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -3208,7 +3212,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -3309,7 +3313,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -3393,7 +3397,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -3602,7 +3606,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -3732,7 +3736,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 
 	// Execute request
 	startTime := time.Now()
-	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -3850,7 +3854,7 @@ func (provider *BedrockProvider) fetchBatchManifest(ctx *schemas.BifrostContext,
 		return nil
 	}
 
-	resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+	resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 	if err != nil {
 		provider.logger.Error("failed to fetch manifest: %v", err)
 		return nil
@@ -3926,7 +3930,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -4074,7 +4078,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 
 		// Execute request
 		startTime := time.Now()
-		resp, err := providerUtils.DoHTTPRequest(provider.client, httpReq)
+		resp, err := providerUtils.DoHTTPRequest(provider.clientFor(ctx), httpReq)
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -4729,7 +4733,7 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletion(ctx *schemas.Bifr
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 	return anthropic.HandleAnthropicChatCompletionRequest(
-		ctx, provider.mantleClient, requestURL, request,
+		ctx, provider.mantleClientFor(ctx), requestURL, request,
 		provider.invokeBuildConfig(request.Model, false, false, guardrailBody),
 		openai.BearerAuthHeader(key), invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, chatExtraParams(request)),
 		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
@@ -4755,7 +4759,7 @@ func (provider *BedrockProvider) invokeAnthropicChatCompletionStream(ctx *schema
 	// is AWS event-stream, which an SSE reader could not parse anyway.
 	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
 	return anthropic.HandleAnthropicChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, requestURL, jsonData,
+		ctx, provider.mantleStreamingClientFor(ctx), requestURL, jsonData,
 		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(chatExtraParams(request)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		provider.networkConfig.BetaHeaderOverrides,
@@ -4777,7 +4781,7 @@ func (provider *BedrockProvider) invokeAnthropicResponses(ctx *schemas.BifrostCo
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 	return anthropic.HandleAnthropicResponsesRequest(
-		ctx, provider.mantleClient, requestURL, request,
+		ctx, provider.mantleClientFor(ctx), requestURL, request,
 		provider.invokeBuildConfig(request.Model, false, true, guardrailBody),
 		openai.BearerAuthHeader(key), invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, responsesExtraParams(request)),
 		provider.invokeSigner(ctx, key, requestURL, bedrockInvokeAccept, region),
@@ -4800,7 +4804,7 @@ func (provider *BedrockProvider) invokeAnthropicResponsesStream(ctx *schemas.Bif
 	}
 	ctx.SetValue(schemas.BifrostContextKeySSEReaderFactory, invokeSSEReaderFactory)
 	return anthropic.HandleAnthropicResponsesStream(
-		ctx, provider.mantleStreamingClient, requestURL, jsonData,
+		ctx, provider.mantleStreamingClientFor(ctx), requestURL, jsonData,
 		openai.BearerAuthHeader(key), provider.invokeStreamHeaders(responsesExtraParams(request)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		provider.networkConfig.BetaHeaderOverrides,
@@ -4897,4 +4901,46 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
 	}
+}
+
+// mantleClientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *BedrockProvider) mantleClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.mantleClient
+	}
+	return provider.proxied.Unary(ctx, provider.mantleClient, provider.logger)
+}
+
+// mantleStreamingClientFor is mantleClientFor for streaming requests.
+func (provider *BedrockProvider) mantleStreamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.mantleStreamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.mantleStreamingClient, provider.logger)
+}
+
+// clientFor returns the unary net/http client for the proxy picked on this
+// attempt, or the provider's base client when unbound.
+func (provider *BedrockProvider) clientFor(ctx context.Context) *http.Client {
+	if provider.proxiedHTTP == nil {
+		return provider.client
+	}
+	return provider.proxiedHTTP.Unary(ctx, provider.client, provider.logger)
+}
+
+// streamingClientFor is clientFor for streaming requests.
+func (provider *BedrockProvider) streamingClientFor(ctx context.Context) *http.Client {
+	if provider.proxiedHTTP == nil {
+		return provider.streamingClient
+	}
+	return provider.proxiedHTTP.Streaming(ctx, provider.streamingClient, provider.logger)
+}
+
+// realtimeClientFor is clientFor for the Nova Sonic realtime client.
+func (provider *BedrockProvider) realtimeClientFor(ctx context.Context) *http.Client {
+	if provider.proxiedHTTP == nil {
+		return provider.realtimeClient
+	}
+	return provider.proxiedHTTP.Unary(ctx, provider.realtimeClient, provider.logger)
 }

@@ -22,12 +22,13 @@ import (
 
 // BedrockMantleProvider implements the Provider interface for the Bedrock Mantle endpoint.
 type BedrockMantleProvider struct {
-	logger                schemas.Logger        // Logger for provider operations
-	mantleClient          *fasthttp.Client      // fasthttp client for unary requests (OpenAI-compatible and native-Anthropic paths)
-	mantleStreamingClient *fasthttp.Client      // fasthttp streaming client for streaming requests
-	networkConfig         schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest    bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse   bool                  // Whether to include raw response in BifrostResponse
+	logger                schemas.Logger                    // Logger for provider operations
+	mantleClient          *fasthttp.Client                  // fasthttp client for unary requests (OpenAI-compatible and native-Anthropic paths)
+	mantleStreamingClient *fasthttp.Client                  // fasthttp streaming client for streaming requests
+	networkConfig         schemas.NetworkConfig             // Network configuration including extra headers
+	sendBackRawRequest    bool                              // Whether to include raw request in BifrostResponse
+	sendBackRawResponse   bool                              // Whether to include raw response in BifrostResponse
+	proxied               *providerUtils.ProxiedClientCache // Reusable clients for per-attempt pool proxies
 }
 
 // NewBedrockMantleProvider creates a new Bedrock Mantle provider instance.
@@ -56,6 +57,7 @@ func NewBedrockMantleProvider(config *schemas.ProviderConfig, logger schemas.Log
 	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
 
 	return &BedrockMantleProvider{
+		proxied:               providerUtils.NewProxiedClientCache(0),
 		logger:                logger,
 		mantleClient:          mantleFasthttpClient,
 		mantleStreamingClient: mantleStreamingFasthttpClient,
@@ -156,7 +158,7 @@ func (provider *BedrockMantleProvider) listModelsByKey(ctx *schemas.BifrostConte
 
 	return openai.ListModelsByKey(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		mURL,
 		key,
 		request.Unfiltered,
@@ -191,7 +193,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 		_, bareModel := parseBedrockRegionAndModel(request.Model)
 		return anthropic.HandleAnthropicChatCompletionRequest(
 			ctx,
-			provider.mantleClient,
+			provider.mantleClientFor(ctx),
 			url,
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -212,7 +214,7 @@ func (provider *BedrockMantleProvider) ChatCompletion(ctx *schemas.BifrostContex
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	resp, bifrostErr := openai.HandleOpenAIChatCompletionRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		openai.BearerAuthHeader(key),
@@ -256,7 +258,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 
 		return anthropic.HandleAnthropicChatCompletionStreaming(
 			ctx,
-			provider.mantleStreamingClient,
+			provider.mantleStreamingClientFor(ctx),
 			url,
 			jsonData,
 			openai.BearerAuthHeader(key),
@@ -277,7 +279,7 @@ func (provider *BedrockMantleProvider) ChatCompletionStream(ctx *schemas.Bifrost
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, schemas.ResolveCanonicalModel(ctx, request.Model), "chat/completions")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIChatCompletionStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClientFor(ctx), url, request,
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -302,7 +304,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 		_, bareModel := parseBedrockRegionAndModel(request.Model)
 		return anthropic.HandleAnthropicResponsesRequest(
 			ctx,
-			provider.mantleClient,
+			provider.mantleClientFor(ctx),
 			url,
 			request,
 			anthropic.AnthropicRequestBuildConfig{
@@ -333,7 +335,7 @@ func (provider *BedrockMantleProvider) Responses(ctx *schemas.BifrostContext, ke
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
-		provider.mantleClient,
+		provider.mantleClientFor(ctx),
 		url,
 		request,
 		openai.BearerAuthHeader(key),
@@ -373,7 +375,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 
 		return anthropic.HandleAnthropicResponsesStream(
 			ctx,
-			provider.mantleStreamingClient,
+			provider.mantleStreamingClientFor(ctx),
 			url,
 			jsonData,
 			openai.BearerAuthHeader(key),
@@ -400,7 +402,7 @@ func (provider *BedrockMantleProvider) ResponsesStream(ctx *schemas.BifrostConte
 	url := mantleOpenAIURL(mantleEndpoints(key.BedrockMantleKeyConfig), region, canonicalModel, "responses")
 	_, request.Model = parseBedrockRegionAndModel(request.Model)
 	return openai.HandleOpenAIResponsesStreaming(
-		ctx, provider.mantleStreamingClient, url, request,
+		ctx, provider.mantleStreamingClientFor(ctx), url, request,
 		openai.BearerAuthHeader(key), bedrock.WithMantleProject(provider.networkConfig.ExtraHeaders, bedrock.MantleOpenAIProjectHeader, resolveProjectID(ctx, key)),
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -667,4 +669,21 @@ func (provider *BedrockMantleProvider) Passthrough(_ *schemas.BifrostContext, _ 
 // PassthroughStream is not supported by the Bedrock Mantle provider.
 func (provider *BedrockMantleProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// mantleClientFor returns the unary client for the proxy picked on this attempt, or
+// the provider's base client when unbound.
+func (provider *BedrockMantleProvider) mantleClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.mantleClient
+	}
+	return provider.proxied.Unary(ctx, provider.mantleClient, provider.logger)
+}
+
+// mantleStreamingClientFor is mantleClientFor for streaming requests.
+func (provider *BedrockMantleProvider) mantleStreamingClientFor(ctx context.Context) *fasthttp.Client {
+	if provider.proxied == nil {
+		return provider.mantleStreamingClient
+	}
+	return provider.proxied.Streaming(ctx, provider.mantleStreamingClient, provider.logger)
 }

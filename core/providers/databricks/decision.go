@@ -111,7 +111,7 @@ func (provider *DatabricksProvider) Decision(ctx *schemas.BifrostContext, key sc
 		req.SetBody(jsonBody)
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.clientFor(ctx), req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -178,7 +178,7 @@ func (provider *DatabricksProvider) systemOneDecision(ctx *schemas.BifrostContex
 	typesafe.SetImagesHeader(authHeaders, request, provider.networkConfig.BetaHeaderOverrides)
 	return typesafe.HandleTypesafeDecisionRequest(
 		ctx,
-		provider.client,
+		provider.clientFor(ctx),
 		url,
 		request,
 		typesafe.ToTypesafeDecisionRequest,
