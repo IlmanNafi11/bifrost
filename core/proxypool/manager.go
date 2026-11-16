@@ -133,9 +133,11 @@ func (m *Manager) RecordFailure(ctx *schemas.BifrostContext, proxyID string, per
 		m.state.set(deadKey(proxyID), "1", 0)
 		m.state.del(failureKey(proxyID))
 		m.state.del(cooldownKey(proxyID))
+		m.logger.Warn("proxy pool: proxy marked dead", "proxy_id", proxyID)
 	} else if count+1 >= ProxyFailureCooldownThreshold {
 		m.state.set(cooldownKey(proxyID), time.Now().Add(ProxyFailureCooldown).UnixNano(), ProxyFailureCooldown)
 		m.state.del(failureKey(proxyID))
+		m.logger.Warn("proxy pool: proxy cooled down", "proxy_id", proxyID, "duration", ProxyFailureCooldown)
 	} else {
 		m.state.set(failureKey(proxyID), count+1, 0)
 	}
