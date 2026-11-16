@@ -11,6 +11,15 @@ import (
 // ProxyMechanism selects which proxy a bound pool serves for a request.
 type ProxyMechanism string
 
+// ProxyProbeMode selects how a pool proxy is verified. Mode A is a CONNECT
+// handshake pre-check; mode B repeats it and fetches the visible egress IP.
+type ProxyProbeMode string
+
+const (
+	ProxyProbeModeA ProxyProbeMode = "a"
+	ProxyProbeModeB ProxyProbeMode = "b"
+)
+
 const (
 	ProxyRoundRobin       ProxyMechanism = "round_robin"       // rotate in order per pool
 	ProxyRandom           ProxyMechanism = "random"            // uniform random pick
