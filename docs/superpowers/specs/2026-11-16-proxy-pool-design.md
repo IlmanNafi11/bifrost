@@ -49,8 +49,11 @@ All confirmed in conversation with the owner (`bansos`):
   socks5://user:pass@host:port   → socks5 + auth
   user:pass@host:port            → http + auth
   ```
-- **Lifecycle semantics**: disable → mark inactive **and** auto-unbind from all
-  keys; delete → auto-unbind then remove row. Both single and batch (checkbox).
+- **Lifecycle semantics**: disable → mark the proxy inactive so every selection
+  mechanism skips it (a disabled proxy is never picked; no key unbind is needed
+  because bindings are pool-scoped, and a pool with no live proxy fails loudly);
+  delete → remove the proxy row. Both single and batch (checkbox). A proxy that
+  is disabled or deleted is removed from its pool's candidate set immediately.
 - **Auto-cooldown** ships in the same cycle: a proxy failing N consecutive
   attempts is skipped for a cooldown window, then retried. Re-verified on
   `least_connections`/`fallback` health.
