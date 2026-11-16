@@ -1,0 +1,374 @@
+# Proxy Pool API
+
+proxy-pools:
+  get:
+    operationId: listProxyPools
+    summary: List proxy pools
+    description: Returns every proxy pool and its proxies. Passwords are omitted.
+    tags:
+      - Proxy Pools
+    responses:
+      '200':
+        description: Proxy pools
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolList'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  post:
+    operationId: createProxyPool
+    summary: Create a proxy pool
+    description: Creates an empty pool. Add proxies with the import endpoint.
+    tags:
+      - Proxy Pools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolMutation'
+    responses:
+      '201':
+        description: Created pool
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPool'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-by-id:
+  get:
+    operationId: getProxyPool
+    summary: Get a proxy pool
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Proxy pool
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPool'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  put:
+    operationId: updateProxyPool
+    summary: Update a proxy pool
+    description: Updates the name and description only; proxies and bindings are separate subresources.
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolMutation'
+    responses:
+      '200':
+        description: Updated pool
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPool'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+  delete:
+    operationId: deleteProxyPool
+    summary: Delete a proxy pool
+    description: Deletes the pool and cascades its proxies and key bindings.
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Deletion result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolStatusResponse'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-import:
+  post:
+    operationId: importProxyPoolProxies
+    summary: Import proxies into a pool
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolImportRequest'
+    responses:
+      '200':
+        description: Import result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolImportResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-probe:
+  post:
+    operationId: probeProxyPoolProxies
+    summary: Probe pool proxies
+    description: |
+      Verifies selected proxies and persists each result as its new status. A proxy
+      that cannot be reached is recorded as dead; it is never assumed alive.
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolProbeRequest'
+    responses:
+      '200':
+        description: Per-proxy probe results
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolProbeResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-disable:
+  post:
+    operationId: disableProxyPoolProxies
+    summary: Disable pool proxies
+    description: Marks selected proxies inactive so no selection mechanism picks them.
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolIDsRequest'
+    responses:
+      '200':
+        description: Update result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolUpdatedResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-delete-proxies:
+  post:
+    operationId: deleteProxyPoolProxies
+    summary: Delete pool proxies
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolIDsRequest'
+    responses:
+      '200':
+        description: Delete result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolDeletedResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-bind:
+  post:
+    operationId: bindProxyPoolKeys
+    summary: Bind upstream keys to a pool
+    description: |
+      Writes the binding table that selects this pool for each key. The per-key
+      `proxy_pool_id` and `proxy_pool_mechanism` fields are a read projection of
+      this table, not a second store.
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolKeysRequest'
+    responses:
+      '200':
+        description: Bind result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolBoundResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+
+proxy-pool-unbind:
+  post:
+    operationId: unbindProxyPoolKeys
+    summary: Unbind upstream keys from a pool
+    tags:
+      - Proxy Pools
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolKeysRequest'
+    responses:
+      '200':
+        description: Unbind result
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/proxypools.yaml#/ProxyPoolUnboundResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []

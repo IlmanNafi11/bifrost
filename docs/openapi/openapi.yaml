@@ -756,6 +756,24 @@ paths:
   /api/pricing/force-sync:
     $ref: "./paths/management/config.yaml#/force-sync-pricing"
 
+  # Proxy Pools
+  /api/proxy-pools:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pools"
+  /api/proxy-pools/{id}:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-by-id"
+  /api/proxy-pools/{id}/import:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-import"
+  /api/proxy-pools/{id}/probe:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-probe"
+  /api/proxy-pools/{id}/disable:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-disable"
+  /api/proxy-pools/{id}/delete:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-delete-proxies"
+  /api/proxy-pools/{id}/bind:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-bind"
+  /api/proxy-pools/{id}/unbind:
+    $ref: "./paths/management/proxypools.yaml#/proxy-pool-unbind"
+
   # Governance - Users (Enterprise)
   /api/governance/users:
     $ref: "./paths/management/users.yaml#/users"
@@ -1718,6 +1736,48 @@ components:
             $ref: "./schemas/inference/common.yaml#/BifrostError"
 
   schemas:
+    # Proxy Pools
+    ProxyMechanism:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyMechanism"
+    ProxyProbeMode:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyProbeMode"
+    ProxyPoolProxyType:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolProxyType"
+    ProxyPoolProxyStatus:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolProxyStatus"
+    ProxyPoolProxy:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolProxy"
+    ProxyPool:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPool"
+    ProxyPoolList:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolList"
+    ProxyPoolMutation:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolMutation"
+    ProxyPoolImportRequest:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolImportRequest"
+    ProxyPoolImportResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolImportResponse"
+    ProxyPoolProbeRequest:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolProbeRequest"
+    ProxyPoolProbeResult:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolProbeResult"
+    ProxyPoolProbeResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolProbeResponse"
+    ProxyPoolIDsRequest:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolIDsRequest"
+    ProxyPoolKeysRequest:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolKeysRequest"
+    ProxyPoolUpdatedResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolUpdatedResponse"
+    ProxyPoolDeletedResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolDeletedResponse"
+    ProxyPoolBoundResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolBoundResponse"
+    ProxyPoolUnboundResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolUnboundResponse"
+    ProxyPoolStatusResponse:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolStatusResponse"
+
     # Agent Gateway
     A2ASendMessageResponse:
       $ref: "./schemas/management/agents.yaml#/A2ASendMessageResponse"

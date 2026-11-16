@@ -437,6 +437,22 @@ Key:
     description:
       type: string
       description: Error or status description for the key
+    proxy_pool_id:
+      type: string
+      description: |
+        Read-only projection of the pool bound to this key. Write through
+        POST /api/proxy-pools/{id}/bind instead; a bound key whose pool cannot
+        serve fails requests with a 503 proxy_pool_exhausted error.
+    proxy_pool_mechanism:
+      type: string
+      description: Read-only projection of the bound pool's selection mechanism.
+      enum:
+        - round_robin
+        - random
+        - weighted
+        - least_connections
+        - fallback
+        - sticky_session
 
 AllowedRequests:
   type: object

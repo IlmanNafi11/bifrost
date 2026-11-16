@@ -1,0 +1,234 @@
+# Proxy Pool Schemas
+
+ProxyMechanism:
+  type: string
+  description: |
+    How a bound pool picks a proxy for each request. `round_robin` rotates in
+    order, `random` picks uniformly, `weighted` picks by proxy weight,
+    `least_connections` picks the least busy proxy (ties go to the cursor),
+    `fallback` advances after a failure, and `sticky_session` pins a proxy to a
+    session and falls back to round robin without one.
+  enum:
+    - round_robin
+    - random
+    - weighted
+    - least_connections
+    - fallback
+    - sticky_session
+
+ProxyProbeMode:
+  type: string
+  description: |
+    `a` completes a CONNECT handshake through the proxy. `b` also fetches the
+    configured echo endpoint through it to record the visible egress IP.
+  enum:
+    - a
+    - b
+
+ProxyPoolProxyType:
+  type: string
+  description: Dialer scheme used for this proxy.
+  enum:
+    - http
+    - socks5
+
+ProxyPoolProxyStatus:
+  type: string
+  description: Last probe result. `dead` proxies are skipped by every mechanism.
+  enum:
+    - unknown
+    - alive
+    - dead
+
+ProxyPoolProxy:
+  type: object
+  description: One proxy endpoint in a pool. Credentials are never returned.
+  required:
+    - id
+    - pool_id
+    - type
+    - url
+    - enabled
+    - weight
+    - status
+  properties:
+    id:
+      type: string
+    pool_id:
+      type: string
+    type:
+      $ref: '#/ProxyPoolProxyType'
+    url:
+      type: string
+      description: Host and port, optionally prefixed with its scheme.
+    username:
+      type: string
+    weight:
+      type: number
+      description: Relative share used by the weighted mechanism. Defaults to 1.
+    enabled:
+      type: boolean
+    status:
+      $ref: '#/ProxyPoolProxyStatus'
+    latency_ms:
+      type: integer
+      format: int64
+    egress_ip:
+      type: string
+    last_tested_at:
+      type: string
+      format: date-time
+
+ProxyPool:
+  type: object
+  description: A reusable set of proxies bound to upstream provider keys.
+  required:
+    - id
+    - name
+  properties:
+    id:
+      type: string
+    name:
+      type: string
+    description:
+      type: string
+    proxies:
+      type: array
+      items:
+        $ref: '#/ProxyPoolProxy'
+
+ProxyPoolList:
+  type: object
+  properties:
+    pools:
+      type: array
+      items:
+        $ref: '#/ProxyPool'
+
+ProxyPoolMutation:
+  type: object
+  description: Caller-editable pool fields. `name` is required on create.
+  required:
+    - name
+  properties:
+    name:
+      type: string
+      minLength: 1
+    description:
+      type: string
+
+ProxyPoolImportRequest:
+  type: object
+  required:
+    - text
+  properties:
+    text:
+      type: string
+      description: |
+        One proxy per line. Accepted forms are `host:port`,
+        `http://host:port`, `socks5://user:pass@host:port` and
+        `user:pass@host:port`. Blank lines and `#` comments are skipped and
+        duplicates collapse by host:port with the first form winning.
+
+ProxyPoolImportResponse:
+  type: object
+  properties:
+    imported:
+      type: integer
+      description: Number of proxies imported after deduplication.
+
+ProxyPoolProbeRequest:
+  type: object
+  properties:
+    ids:
+      type: array
+      nullable: true
+      items:
+        type: string
+      description: Proxy ids to probe. Omit or null to probe every proxy in the pool.
+    mode:
+      $ref: '#/ProxyProbeMode'
+
+ProxyPoolProbeResult:
+  type: object
+  description: Per-proxy probe outcome. A failure is recorded as dead, not skipped.
+  required:
+    - id
+    - status
+  properties:
+    id:
+      type: string
+    status:
+      $ref: '#/ProxyPoolProxyStatus'
+    latency_ms:
+      type: integer
+      format: int64
+    egress_ip:
+      type: string
+    error:
+      type: string
+      description: Present when the probe failed.
+
+ProxyPoolProbeResponse:
+  type: object
+  properties:
+    results:
+      type: array
+      items:
+        $ref: '#/ProxyPoolProbeResult'
+
+ProxyPoolIDsRequest:
+  type: object
+  required:
+    - ids
+  properties:
+    ids:
+      type: array
+      minItems: 1
+      items:
+        type: string
+
+ProxyPoolKeysRequest:
+  type: object
+  required:
+    - key_ids
+  properties:
+    key_ids:
+      type: array
+      minItems: 1
+      items:
+        type: string
+      description: Upstream provider key ids (not Bifrost virtual keys).
+    mechanism:
+      $ref: '#/ProxyMechanism'
+
+ProxyPoolUpdatedResponse:
+  type: object
+  properties:
+    updated:
+      type: integer
+
+ProxyPoolDeletedResponse:
+  type: object
+  properties:
+    deleted:
+      type: integer
+
+ProxyPoolBoundResponse:
+  type: object
+  properties:
+    bound:
+      type: integer
+
+ProxyPoolUnboundResponse:
+  type: object
+  properties:
+    unbound:
+      type: integer
+
+ProxyPoolStatusResponse:
+  type: object
+  properties:
+    status:
+      type: string
+      example: success
