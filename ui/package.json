@@ -17,7 +17,10 @@
 		"format:changed": "sh scripts/formatChanged.sh",
 		"format:changed:check": "sh scripts/formatChanged.sh --check",
 		"format:enterprise": "oxfmt app/enterprise/",
-		"i18n:check": "node scripts/i18nCheck.mjs"
+		"i18n:check": "node scripts/i18nCheck.mjs",
+		"check:fast": "node ../guard.mjs && npm run typecheck && npx oxlint && npm run i18n:check && npm run format:changed:check",
+		"check:task": "npm run check:fast && npx vitest run --coverage",
+		"check:full": "npm run check:task && npx depcruise --config .dependency-cruiser.js app"
 	},
 	"dependencies": {
 		"@bprogress/core": "1.3.4",
@@ -100,6 +103,8 @@
 		"@types/react": "19.2.7",
 		"@types/react-dom": "19.2.3",
 		"@vitejs/plugin-react": "6.0.1",
+		"@vitest/coverage-v8": "4.1.12",
+		"dependency-cruiser": "18.7.2",
 		"oxfmt": "0.45.0",
 		"oxlint": "1.60.0",
 		"tailwindcss": "4.1.12",

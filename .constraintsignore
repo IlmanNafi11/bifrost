@@ -1,0 +1,4 @@
+# Paths exempt from floor-guard.mjs (one glob per line). Only files that
+# must legitimately contain the banned patterns belong here.
+CONSTRAINTS.md
+guard.mjs

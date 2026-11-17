@@ -1,6 +1,8 @@
 # AGENTS.md — Bifrost AI Gateway
 
 > Context for AI agents (Claude Code, Copilot, Cursor, etc.) working on this codebase. Read this fully before making changes.
+> Read `CONSTRAINTS.md` before writing code. Do not weaken it to make a change pass.
+
 
 ## What is Bifrost?
 
