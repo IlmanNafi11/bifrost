@@ -227,6 +227,20 @@ func TestGetBindingByKeyID(t *testing.T) {
 	assert.Empty(t, bindings)
 }
 
+func TestHasProxyBindingsTracksBindingMutations(t *testing.T) {
+	store := setupProxyPoolTestStore(t)
+	ctx := context.Background()
+	checker, ok := any(store).(interface{ HasProxyBindings() bool })
+	require.True(t, ok, "RDBConfigStore must expose the cheap binding-existence check")
+	require.NoError(t, store.CreatePool(ctx, &schemas.ProxyPool{ID: "pool-1", Name: "p"}))
+
+	require.False(t, checker.HasProxyBindings())
+	require.NoError(t, store.BindKeys(ctx, "pool-1", []string{"key-1"}, schemas.ProxyRoundRobin))
+	require.True(t, checker.HasProxyBindings(), "bind must be visible without a store reload")
+	require.NoError(t, store.UnbindKeys(ctx, "pool-1", []string{"key-1"}))
+	require.False(t, checker.HasProxyBindings(), "unbind must clear the flag")
+}
+
 func TestProxyPoolPasswordNeverReturned(t *testing.T) {
 	store := setupProxyPoolTestStore(t)
 	ctx := context.Background()

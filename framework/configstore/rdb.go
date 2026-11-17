@@ -43,6 +43,13 @@ type RDBConfigStore struct {
 	logger           schemas.Logger
 	migrateOnFreshFn func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error
 	refreshPoolFn    func(ctx context.Context) error
+
+	// Cached answer to "does any key have a binding?". Lets the per-request
+	// selection path skip the authoritative GetBinding query for the common
+	// case. Bounded by proxyBindingFlagTTL so a multi-node bind becomes visible
+	// even when the mutation happened on another process.
+	hasProxyBindings      atomic.Bool
+	proxyBindingCheckedAt atomic.Int64
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.

@@ -1,2 +1,3 @@
 - chore: upgraded core to v1.15.2
 - feat: proxy pool config-store tables, CRUD, binding and key-delete cascade, with an additive migration that preserves pool configuration across downgrades
+- feat: a cached binding-existence flag lets per-request proxy selection skip the database lookup when no key is bound; mutations refresh it immediately and a five-second TTL covers other nodes

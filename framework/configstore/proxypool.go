@@ -14,6 +14,43 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// proxyBindingFlagTTL bounds how stale the cached binding-existence flag may
+// be. A bind/unbind through this store updates it immediately; the TTL covers
+// mutations made by another node against the same database.
+const proxyBindingFlagTTL = 5 * time.Second
+
+// HasProxyBindings reports whether any key is bound to a proxy pool without a
+// database round trip in the common case. The flag is seeded lazily from the
+// store and refreshed by every binding mutation. A failed seed returns true so
+// callers still perform the authoritative lookup rather than silently leaking
+// the provider proxy for a key that may be bound.
+func (s *RDBConfigStore) HasProxyBindings() bool {
+	checkedAt := s.proxyBindingCheckedAt.Load()
+	if checkedAt != 0 && time.Since(time.Unix(0, checkedAt)) < proxyBindingFlagTTL {
+		return s.hasProxyBindings.Load()
+	}
+	var count int64
+	if err := s.DB().Model(&tables.TableProxyPoolBinding{}).Limit(1).Count(&count).Error; err != nil {
+		return true
+	}
+	s.setProxyBindingFlag(count > 0)
+	return s.hasProxyBindings.Load()
+}
+
+func (s *RDBConfigStore) setProxyBindingFlag(has bool) {
+	s.hasProxyBindings.Store(has)
+	s.proxyBindingCheckedAt.Store(time.Now().UnixNano())
+}
+
+// refreshProxyBindingFlag re-reads the authoritative count after a mutation.
+// A failed refresh leaves the previous value in place; the TTL will retry.
+func (s *RDBConfigStore) refreshProxyBindingFlag(ctx context.Context) {
+	var count int64
+	if err := s.DB().WithContext(ctx).Model(&tables.TableProxyPoolBinding{}).Limit(1).Count(&count).Error; err == nil {
+		s.setProxyBindingFlag(count > 0)
+	}
+}
+
 // ListPools loads every proxy pool with its proxies, in id order, so startup
 // reload and API output are stable.
 func (s *RDBConfigStore) ListPools(ctx context.Context) ([]schemas.ProxyPool, error) {
@@ -101,7 +138,7 @@ func (s *RDBConfigStore) UpdatePool(ctx context.Context, p *schemas.ProxyPool) e
 // deletes keep the behavior identical under the SQLite test harness where
 // foreign keys may not be enforced.
 func (s *RDBConfigStore) DeletePool(ctx context.Context, id string) error {
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&tables.TableProxyPool{}).Where("id = ?", id).Count(&count).Error; err != nil {
 			return err
@@ -117,6 +154,11 @@ func (s *RDBConfigStore) DeletePool(ctx context.Context, id string) error {
 		}
 		return tx.Where("id = ?", id).Delete(&tables.TableProxyPool{}).Error
 	})
+	if err != nil {
+		return err
+	}
+	s.refreshProxyBindingFlag(ctx)
+	return nil
 }
 
 // ImportProxies upserts proxies into a pool. The pool must exist. Rows are
@@ -229,7 +271,7 @@ func (s *RDBConfigStore) BindKeys(ctx context.Context, poolID string, keyIDs []s
 	sorted := slices.Clone(keyIDs)
 	slices.Sort(sorted)
 	unique := slices.Compact(sorted)
-	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var count int64
 		if err := tx.Model(&tables.TableProxyPool{}).Where("id = ?", poolID).Count(&count).Error; err != nil {
 			return err
@@ -249,6 +291,11 @@ func (s *RDBConfigStore) BindKeys(ctx context.Context, poolID string, keyIDs []s
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	s.setProxyBindingFlag(true)
+	return nil
 }
 
 // UnbindKeys removes the given keys from a pool. Keys without a binding are
@@ -257,9 +304,13 @@ func (s *RDBConfigStore) UnbindKeys(ctx context.Context, poolID string, keyIDs [
 	if len(keyIDs) == 0 {
 		return nil
 	}
-	return s.DB().WithContext(ctx).
+	if err := s.DB().WithContext(ctx).
 		Where("pool_id = ? AND provider_key_id IN ?", poolID, keyIDs).
-		Delete(&tables.TableProxyPoolBinding{}).Error
+		Delete(&tables.TableProxyPoolBinding{}).Error; err != nil {
+		return err
+	}
+	s.refreshProxyBindingFlag(ctx)
+	return nil
 }
 
 // ListBindings returns every key binding, ordered by key id so reloads are stable.
@@ -296,9 +347,13 @@ func (s *RDBConfigStore) GetBinding(ctx context.Context, keyID string) (*schemas
 // key-delete path so a deleted key never leaves a binding a recreated key could
 // resurrect.
 func (s *RDBConfigStore) DeleteKeyBindings(ctx context.Context, keyID string) error {
-	return s.DB().WithContext(ctx).
+	if err := s.DB().WithContext(ctx).
 		Where("provider_key_id = ?", keyID).
-		Delete(&tables.TableProxyPoolBinding{}).Error
+		Delete(&tables.TableProxyPoolBinding{}).Error; err != nil {
+		return err
+	}
+	s.refreshProxyBindingFlag(ctx)
+	return nil
 }
 
 // proxyPoolFromTable rebuilds a schemas.ProxyPool from its row and proxy rows.

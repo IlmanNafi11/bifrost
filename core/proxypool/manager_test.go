@@ -675,6 +675,33 @@ func TestDefaultProbeEchoEndpointConfigured(t *testing.T) {
 	}
 }
 
+type noBindingStore struct {
+	*memPoolStore
+	getCalls int
+}
+
+func (s *noBindingStore) HasProxyBindings() bool { return false }
+
+func (s *noBindingStore) GetBinding(ctx context.Context, keyID string) (*schemas.ProxyPoolBinding, error) {
+	s.getCalls++
+	return s.memPoolStore.GetBinding(ctx, keyID)
+}
+
+func TestPickProxy_SkipsLookupWhenStoreHasNoBindings(t *testing.T) {
+	base := newMemPoolStore(schemas.ProxyPool{ID: "pool", Proxies: testProxies("p1")})
+	base.bind("key", "pool", schemas.ProxyRoundRobin)
+	store := &noBindingStore{memPoolStore: base}
+	m := testManager(store, newTTLKV())
+
+	cfg, err := m.PickProxy(testCtx(""), "key")
+	if err != nil || cfg != nil {
+		t.Fatalf("PickProxy = (%v, %v), want (nil, nil)", cfg, err)
+	}
+	if store.getCalls != 0 {
+		t.Fatalf("GetBinding called %d times, want 0 on the unbound fast path", store.getCalls)
+	}
+}
+
 func TestManagerStats_TracksSelectionsExhaustionFailuresAndProbes(t *testing.T) {
 	store := newMemPoolStore(schemas.ProxyPool{ID: "pool", Proxies: testProxies("p1")})
 	store.bind("key", "pool", schemas.ProxyWeighted)

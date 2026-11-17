@@ -97,6 +97,12 @@ func NewManager(store schemas.ProxyPoolStore, kv schemas.KVStore, logger schemas
 // or fully ineligible pool returns ErrPoolExhausted.
 func (m *Manager) PickProxy(ctx *schemas.BifrostContext, keyID string) (*schemas.ProxyConfig, error) {
 	ctx = ensureCtx(ctx)
+	// Stores that can answer cheaply whether any binding exists let the common
+	// unbound case skip the authoritative lookup entirely. The check is an
+	// atomic load (plus a bounded TTL refresh), never a per-request DB query.
+	if checker, ok := m.store.(interface{ HasProxyBindings() bool }); ok && !checker.HasProxyBindings() {
+		return nil, nil
+	}
 	binding, err := m.store.GetBinding(ctx, keyID)
 	if err != nil {
 		return nil, err

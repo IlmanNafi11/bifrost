@@ -1,5 +1,6 @@
 - feat: per-key proxy pools resolve a bound key's egress proxy at selection time with six mechanisms; an exhausted pool fails closed with `proxy_pool_exhausted` instead of falling back to the provider or global proxy
 - feat: proxy-pool selection, exhaustion, failure and probe counters are available via `Manager.Stats()` and `Bifrost.ProxyPoolStats()` for diagnostics; unbound requests add no work
+- fix: wire the proxy pool store into the HTTP server so a bound key actually egresses through its pool; the unbound fast path skips the binding lookup entirely
 - fix: chat completion requests with no messages return a 400 instead of crashing the gateway, and a converter that returns a nil request body yields an error on every provider
 - fix: gemini - skip null entries in `parts` and `functionDeclarations` on Gemini and Vertex requests and responses instead of panicking
 - fix: recover panics on provider stream goroutines and in plugin post-hooks; the stream ends with one terminal 500 error chunk, and the remaining post-hooks still run
