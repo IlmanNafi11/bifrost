@@ -1,3 +1,6 @@
 - chore: upgraded core to v1.15.2
 - feat: proxy pool config-store tables, CRUD, binding and key-delete cascade, with an additive migration that preserves pool configuration across downgrades
 - feat: a cached binding-existence flag lets per-request proxy selection skip the database lookup when no key is bound; mutations refresh it immediately and a five-second TTL covers other nodes
+- [test]: regression tests pin advisor-pass billing on the Anthropic passthrough stream, with no repeated per-request fee, fast mode and US data residency carried to the advisor pass, and no advisor billing on semantic-cache hits (from #8783) [@tomatomptt](https://github.com/tomatomptt)
+- feat: oauth2_server_config.gateways.claude_code setting and device-code columns on oauth2_authorize_requests for Claude Code gateway sign-in (#7963) [@jimseiwert](https://github.com/jimseiwert)
+- [feat]: MachGen video jobs are settled and priced by the video job sweeper
