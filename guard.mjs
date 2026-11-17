@@ -98,10 +98,23 @@ for (const { file, text } of added) {
 }
 
 for (const f of deleted) if (isTest(f)) flag("test-deleted", f, "file deleted");
+
+// An assertion whose expected value was corrected still guards the same
+// behaviour - it is a replacement, not a removed assertion. Match on the
+// expression under expect()/assert()/should() so only true deletions flag.
+const assertionSubject = (text) => {
+	const m = text.match(/\b(?:expect|assert|should)\s*\(([^)]*)\)/);
+	return m ? m[1].trim() : null;
+};
 for (const { file, text } of removed) {
-	if (isTest(file) && !deleted.includes(file) && /\b(expect|assert|should)\b/.test(text)) {
-		flag("assertion-removed", file, text);
-	}
+	if (!isTest(file) || deleted.includes(file) || !/\b(expect|assert|should)\b/.test(text)) continue;
+	const subject = assertionSubject(text);
+	const replaced =
+		subject &&
+		added.some(
+			(a) => a.file === file && /\b(expect|assert|should)\b/.test(a.text) && assertionSubject(a.text) === subject,
+		);
+	if (!replaced) flag("assertion-removed", file, text);
 }
 
 // A CONSTRAINTS.md rule weakened or removed.
