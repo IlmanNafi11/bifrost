@@ -62,6 +62,15 @@ type Manager struct {
 	rng      *rand.Rand
 	cursors  map[string]uint64 // pool id -> round-robin cursor
 	inFlight map[string]int64  // proxy id -> attempts in flight
+
+	stats metrics
+}
+
+// Stats returns a snapshot of selection, exhaustion, failure and probe counters.
+// It is a diagnostics read, not a request-path call: snapshot allocates a small
+// map. The counters it reads are atomic and add nothing to unbound requests.
+func (m *Manager) Stats() Stats {
+	return m.stats.snapshot()
 }
 
 // NewManager builds a selection manager. A nil KVStore keeps health state in
@@ -100,15 +109,18 @@ func (m *Manager) PickProxy(ctx *schemas.BifrostContext, keyID string) (*schemas
 		return nil, err
 	}
 	if pool == nil {
+		m.stats.poolExhausted.Add(1)
 		return nil, ErrPoolExhausted
 	}
 
 	candidates := m.eligible(pool)
 	if len(candidates) == 0 {
+		m.stats.poolExhausted.Add(1)
 		return nil, ErrPoolExhausted
 	}
 
 	picked := m.selectProxy(ctx, binding.Mechanism, binding.PoolID, keyID, candidates)
+	m.stats.recordSelection(binding.Mechanism)
 	proxy := proxyConfigFrom(picked)
 	return proxy, nil
 }
@@ -133,10 +145,12 @@ func (m *Manager) RecordFailure(ctx *schemas.BifrostContext, proxyID string, per
 		m.state.set(deadKey(proxyID), "1", 0)
 		m.state.del(failureKey(proxyID))
 		m.state.del(cooldownKey(proxyID))
+		m.stats.markedDead.Add(1)
 		m.logger.Warn("proxy pool: proxy marked dead", "proxy_id", proxyID)
 	} else if count+1 >= ProxyFailureCooldownThreshold {
 		m.state.set(cooldownKey(proxyID), time.Now().Add(ProxyFailureCooldown).UnixNano(), ProxyFailureCooldown)
 		m.state.del(failureKey(proxyID))
+		m.stats.cooledDown.Add(1)
 		m.logger.Warn("proxy pool: proxy cooled down", "proxy_id", proxyID, "duration", ProxyFailureCooldown)
 	} else {
 		m.state.set(failureKey(proxyID), count+1, 0)
@@ -213,6 +227,16 @@ func (m *Manager) SetEchoIPEndpoint(rawURL string) {
 // proxy is alive. The caller persists the returned status, latency and IP with
 // SetProxyStatus.
 func (m *Manager) Probe(ctx context.Context, p schemas.PoolProxy, mode schemas.ProxyProbeMode) (status string, latencyMs int64, egressIP string, err error) {
+	// Probe runs on the admin path, so a defer here is free on the request path.
+	// Every exit records an outcome and, on success, the observed latency.
+	defer func() {
+		if status == ProxyStatusAlive {
+			m.stats.probesAlive.Add(1)
+			m.stats.lastProbeLatencyMs.Store(latencyMs)
+		} else {
+			m.stats.probesDead.Add(1)
+		}
+	}()
 	proxyURL, err := proxyURLFor(p)
 	if err != nil {
 		return ProxyStatusDead, 0, "", err

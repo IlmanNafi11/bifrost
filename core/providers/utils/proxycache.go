@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -41,6 +42,35 @@ type ProxiedClientCache struct {
 	mu    sync.Mutex
 	index map[string]*list.Element
 	lru   *list.List
+
+	hits      atomic.Uint64
+	misses    atomic.Uint64
+	evictions atomic.Uint64
+}
+
+// ProxyCacheStats is a diagnostics snapshot of a ProxiedClientCache. Size is
+// read under the cache lock; the counters are atomic. Unbound attempts do not
+// touch either, so reading stats costs nothing on the common path.
+type ProxyCacheStats struct {
+	Size      int    `json:"size"`
+	Cap       int    `json:"cap"`
+	Hits      uint64 `json:"hits"`
+	Misses    uint64 `json:"misses"`
+	Evictions uint64 `json:"evictions"`
+}
+
+// Stats returns a point-in-time snapshot for diagnostics and admin surfaces.
+func (c *ProxiedClientCache) Stats() ProxyCacheStats {
+	c.mu.Lock()
+	size := c.lru.Len()
+	c.mu.Unlock()
+	return ProxyCacheStats{
+		Size:      size,
+		Cap:       c.cap,
+		Hits:      c.hits.Load(),
+		Misses:    c.misses.Load(),
+		Evictions: c.evictions.Load(),
+	}
 }
 
 // NewProxiedClientCache returns a cache holding at most cap distinct proxies.
@@ -98,9 +128,11 @@ func (c *ProxiedClientCache) getOrBuild(key string, pc *schemas.ProxyConfig, bas
 	defer c.mu.Unlock()
 
 	if el, ok := c.index[key]; ok {
+		c.hits.Add(1)
 		c.lru.MoveToFront(el)
 		return el.Value.(*proxiedClientEntry)
 	}
+	c.misses.Add(1)
 
 	unary := ConfigureProxy(CloneFastHTTPClientConfig(base), pc, logger)
 	entry := &proxiedClientEntry{
@@ -114,6 +146,7 @@ func (c *ProxiedClientCache) getOrBuild(key string, pc *schemas.ProxyConfig, bas
 		oldest := c.lru.Back()
 		c.lru.Remove(oldest)
 		delete(c.index, oldest.Value.(*proxiedClientEntry).key)
+		c.evictions.Add(1)
 	}
 	return entry
 }

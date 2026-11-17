@@ -23,10 +23,17 @@ type ProxyProber interface {
 	Probe(ctx context.Context, p schemas.PoolProxy, mode schemas.ProxyProbeMode) (status string, latencyMs int64, egressIP string, err error)
 }
 
+// ProxyPoolStatsSource exposes proxy-pool counters from the running Bifrost
+// instance. *bifrost.Bifrost satisfies it; tests can supply a fake.
+type ProxyPoolStatsSource interface {
+	ProxyPoolStats() *proxypool.Stats
+}
+
 // ProxyPoolHandler manages the proxy pool admin routes.
 type ProxyPoolHandler struct {
-	store  schemas.ProxyPoolStore
-	prober ProxyProber
+	store       schemas.ProxyPoolStore
+	prober      ProxyProber
+	statsSource ProxyPoolStatsSource
 }
 
 // NewProxyPoolHandler builds a proxy pool handler. A nil prober uses a manager
@@ -37,6 +44,13 @@ func NewProxyPoolHandler(store schemas.ProxyPoolStore, prober ProxyProber) *Prox
 		prober = proxypool.NewManager(store, nil, nil)
 	}
 	return &ProxyPoolHandler{store: store, prober: prober}
+}
+
+// SetStatsSource attaches the live proxy-pool counters to the list response.
+// It is separate from the constructor so embedders that only need CRUD keep
+// building the handler with a prober alone.
+func (h *ProxyPoolHandler) SetStatsSource(source ProxyPoolStatsSource) {
+	h.statsSource = source
 }
 
 // RegisterRoutes registers the proxy pool CRUD and subresource routes.
@@ -100,9 +114,14 @@ func (h *ProxyPoolHandler) listPools(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to list proxy pools: %v", err))
 		return
 	}
-	SendJSON(ctx, struct {
+	response := struct {
 		Pools []schemas.ProxyPool `json:"pools"`
-	}{Pools: pools})
+		Stats *proxypool.Stats    `json:"stats,omitempty"`
+	}{Pools: pools}
+	if h.statsSource != nil {
+		response.Stats = h.statsSource.ProxyPoolStats()
+	}
+	SendJSON(ctx, response)
 }
 
 func (h *ProxyPoolHandler) createPool(ctx *fasthttp.RequestCtx) {

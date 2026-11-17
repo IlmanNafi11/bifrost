@@ -104,6 +104,38 @@ ProxyPoolList:
       type: array
       items:
         $ref: '#/ProxyPool'
+    stats:
+      $ref: '#/ProxyPoolStats'
+
+ProxyPoolStats:
+  type: object
+  description: Runtime counters for per-key proxy selection. Omitted when no proxy pool store is configured.
+  properties:
+    selections:
+      type: object
+      description: Successful picks per selection mechanism.
+      additionalProperties:
+        type: integer
+        format: uint64
+    pool_exhausted:
+      type: integer
+      format: uint64
+      description: Bound keys whose pool had no eligible proxy.
+    marked_dead:
+      type: integer
+      format: uint64
+    cooled_down:
+      type: integer
+      format: uint64
+    probes_alive:
+      type: integer
+      format: uint64
+    probes_dead:
+      type: integer
+      format: uint64
+    last_probe_latency_ms:
+      type: integer
+      format: int64
 
 ProxyPoolMutation:
   type: object

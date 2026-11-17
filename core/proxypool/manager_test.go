@@ -587,8 +587,10 @@ func TestProbe_ModeAConnectAndModeBEchoIP(t *testing.T) {
 	if status != ProxyStatusAlive {
 		t.Fatalf("mode B status = %s, want alive", status)
 	}
-	if latency <= 0 {
-		t.Fatalf("mode B latency = %d, want > 0", latency)
+	// A loopback proxy plus echo can complete in under a millisecond; Probe
+	// reports whole milliseconds, so a legitimate fast probe records 0.
+	if latency < 0 {
+		t.Fatalf("mode B latency = %d", latency)
 	}
 	if ip != egressIP {
 		t.Fatalf("mode B egress ip = %q, want %s", ip, egressIP)
@@ -670,5 +672,48 @@ func TestProxyURLFor_BareSchemeAndCredentials(t *testing.T) {
 func TestDefaultProbeEchoEndpointConfigured(t *testing.T) {
 	if DefaultProbeEchoEndpoint == "" {
 		t.Fatal("default mode-B echo endpoint must be configured")
+	}
+}
+
+func TestManagerStats_TracksSelectionsExhaustionFailuresAndProbes(t *testing.T) {
+	store := newMemPoolStore(schemas.ProxyPool{ID: "pool", Proxies: testProxies("p1")})
+	store.bind("key", "pool", schemas.ProxyWeighted)
+	m := testManager(store, newTTLKV())
+	if _, err := m.PickProxy(testCtx(""), "key"); err != nil {
+		t.Fatalf("PickProxy: %v", err)
+	}
+
+	empty := newMemPoolStore(schemas.ProxyPool{ID: "empty"})
+	empty.bind("bad", "empty", schemas.ProxyRoundRobin)
+	exhausted := testManager(empty, newTTLKV())
+	if _, err := exhausted.PickProxy(testCtx(""), "bad"); err != ErrPoolExhausted {
+		t.Fatalf("PickProxy on empty pool = %v, want ErrPoolExhausted", err)
+	}
+	exhausted.RecordFailure(testCtx(""), "p1", true)
+	for i := 0; i < ProxyFailureCooldownThreshold; i++ {
+		exhausted.RecordFailure(testCtx(""), "p2", false)
+	}
+
+	dead := schemas.PoolProxy{ID: "p1", Type: schemas.HTTPProxy, URL: "127.0.0.1:1", Enabled: true}
+	if _, _, _, err := exhausted.Probe(context.Background(), dead, schemas.ProxyProbeModeA); err == nil {
+		t.Fatal("expected a CONNECT failure on a closed port")
+	}
+
+	stats := m.Stats()
+	if got := stats.Selections[schemas.ProxyWeighted]; got != 1 {
+		t.Fatalf("weighted selections = %d, want 1", got)
+	}
+	ex := exhausted.Stats()
+	if ex.PoolExhausted != 1 {
+		t.Fatalf("pool_exhausted = %d, want 1", ex.PoolExhausted)
+	}
+	if ex.MarkedDead != 1 {
+		t.Fatalf("marked_dead = %d, want 1", ex.MarkedDead)
+	}
+	if ex.CooledDown != 1 {
+		t.Fatalf("cooled_down = %d, want 1", ex.CooledDown)
+	}
+	if ex.ProbesDead != 1 {
+		t.Fatalf("probes_dead = %d, want 1", ex.ProbesDead)
 	}
 }

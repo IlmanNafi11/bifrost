@@ -209,3 +209,31 @@ func TestProxiedClientCache_CapEvictsLRU(t *testing.T) {
 		t.Fatal("least-recently-used client was not evicted")
 	}
 }
+
+func TestProxiedClientCache_StatsTracksHitsMissesAndEvictions(t *testing.T) {
+	base := &fasthttp.Client{}
+	cache := NewProxiedClientCache(1)
+	first := proxyCacheTestCtx(httpProxyConfig(18081, "", ""))
+	second := proxyCacheTestCtx(httpProxyConfig(18082, "", ""))
+
+	cache.Unary(first, base, testLogger{})  // miss
+	cache.Unary(first, base, testLogger{})  // hit
+	cache.Unary(second, base, testLogger{}) // miss + evict
+
+	got := cache.Stats()
+	if got.Size != 1 {
+		t.Fatalf("size = %d, want 1", got.Size)
+	}
+	if got.Cap != 1 {
+		t.Fatalf("cap = %d, want 1", got.Cap)
+	}
+	if got.Hits != 1 {
+		t.Fatalf("hits = %d, want 1", got.Hits)
+	}
+	if got.Misses != 2 {
+		t.Fatalf("misses = %d, want 2", got.Misses)
+	}
+	if got.Evictions != 1 {
+		t.Fatalf("evictions = %d, want 1", got.Evictions)
+	}
+}

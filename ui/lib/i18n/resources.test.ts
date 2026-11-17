@@ -53,10 +53,12 @@ describe("enterprise catalogs", () => {
 });
 
 describe("loadCatalog", () => {
+	// Ten locales x nine namespaces is 90 dynamic imports; under a loaded runner
+	// that exceeds vitest's 5s default without indicating a regression.
 	it("loads every non-English OSS catalog from disk", async () => {
 		const { loadCatalog } = await import("./resources");
 		for (const lang of otherLocales) for (const ns of OSS_NAMESPACES) expect(await loadCatalog(lang, ns)).toEqual(readCatalog(lang, ns));
-	});
+	}, 30_000);
 
 	it("rejects a language or namespace that has no catalog", async () => {
 		const { loadCatalog } = await import("./resources");

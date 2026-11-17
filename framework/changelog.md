@@ -1,1 +1,2 @@
 - chore: upgraded core to v1.15.2
+- feat: proxy pool config-store tables, CRUD, binding and key-delete cascade, with an additive migration that preserves pool configuration across downgrades

@@ -32,6 +32,17 @@ export interface ProxyPool {
 	proxies: PoolProxy[];
 }
 
+// Runtime counters on the list response; omitted when no pool store is configured.
+export interface ProxyPoolStats {
+	selections?: Partial<Record<ProxyMechanism, number>>;
+	pool_exhausted?: number;
+	marked_dead?: number;
+	cooled_down?: number;
+	probes_alive?: number;
+	probes_dead?: number;
+	last_probe_latency_ms?: number;
+}
+
 export interface ProxyPoolMutation {
 	name?: string;
 	description?: string;

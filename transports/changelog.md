@@ -1,3 +1,7 @@
+## ✨ Added
+
+- **Per-Key Proxy Pools** - Upstream API keys can bind to a pool of HTTP/SOCKS5 proxies with six selection mechanisms. Bound keys egress through the picked proxy; a pool that cannot serve fails closed with a terminal `proxy_pool_exhausted` 503 rather than leaking the provider or global proxy. Admin CRUD, import, probe, bind/unbind and a per-key read projection are available under `/api/proxy-pools`, alongside runtime selection/exhaustion/probe stats on the list response
+
 ## 🐞 Fixed
 
 - **Empty Chat Messages** - A chat completion request with missing or empty `messages` returns a 400 instead of crashing the gateway
@@ -10,4 +14,4 @@
 
 ## 🗄️ Database Migrations
 
-- No new database migrations in this release.
+- `add_proxy_pool_tables` creates `proxy_pools`, `proxy_pool_proxies` and `proxy_pool_bindings`. The tables are additive and older binaries ignore them; the migration has no down-migration so pool configuration is preserved across a downgrade.

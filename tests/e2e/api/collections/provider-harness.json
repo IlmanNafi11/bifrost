@@ -319321,7 +319321,7 @@
                   "}",
                   "var state = JSON.parse(pm.collectionVariables.get('pp1State') || '{}');",
                   "var text = pm.response.text() || '';",
-                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) {}",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { /* non-JSON body; exact status and pm.response.text() asserted below */ }",
                   "pm.test('exhausted pool returns exact 503 [body: ' + text.slice(0, 300) + ']', function () {",
                   "  pm.expect(pm.response.code, 'expected 503, got ' + pm.response.code + '; body: ' + text).to.eql(503);",
                   "});",
@@ -319492,7 +319492,7 @@
                   "}",
                   "var state = JSON.parse(pm.collectionVariables.get('pp2State') || '{}');",
                   "var text = pm.response.text() || '';",
-                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) {}",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { /* non-JSON body; exact status and pm.response.text() asserted below */ }",
                   "pm.test('exhausted pool returns exact 503 [body: ' + text.slice(0, 300) + ']', function () {",
                   "  pm.expect(pm.response.code, 'expected 503, got ' + pm.response.code + '; body: ' + text).to.eql(503);",
                   "});",
@@ -320036,7 +320036,7 @@
                   "var text = pm.response.text() || '';",
                   "pm.test('delete reports one proxy deleted', function () {",
                   "  pm.expect(pm.response.code, 'body: ' + text).to.eql(200);",
-                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) {}",
+                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { /* non-JSON body; exact status and pm.response.text() asserted below */ }",
                   "  pm.expect(j.deleted, 'body: ' + text).to.eql(1);",
                   "});",
                   "call('GET', '/api/proxy-pools/' + encodeURIComponent(state.poolId), null, function (res, j) {",
@@ -320212,7 +320212,7 @@
                   "var text = pm.response.text() || '';",
                   "pm.test('bind reports one key bound', function () {",
                   "  pm.expect(pm.response.code, 'body: ' + text).to.eql(200);",
-                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) {}",
+                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { /* non-JSON body; exact status and pm.response.text() asserted below */ }",
                   "  pm.expect(j.bound, 'body: ' + text).to.eql(1);",
                   "});",
                   "function keyPath() { return '/api/providers/' + encodeURIComponent(state.provider) + '/keys/' + encodeURIComponent(state.keyId); }",
@@ -320261,6 +320261,47 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"key_ids\": [\"{{pp6KeyId}}\"],\n  \"mechanism\": \"weighted\"\n}"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "proxy pool list exposes runtime selection and exhaustion stats (proxy-pool admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('list returns 200 [body: ' + text.slice(0, 300) + ']', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200, got ' + pm.response.code + '; body: ' + text).to.eql(200);",
+                  "});",
+                  "pm.test('list exposes runtime proxy-pool stats [body: ' + text.slice(0, 300) + ']', function () {",
+                  "  var j = {}; try { j = pm.response.json() || {}; } catch (e) { /* non-JSON body; assertion message includes it */ }",
+                  "  pm.expect(j.stats, 'stats missing; body: ' + text).to.be.an('object');",
+                  "  pm.expect(j.stats.selections, 'selections missing; body: ' + text).to.be.an('object');",
+                  "  pm.expect(j.stats.pool_exhausted, 'pool_exhausted missing; body: ' + text).to.be.a('number');",
+                  "  pm.expect(j.stats.marked_dead, 'marked_dead missing; body: ' + text).to.be.a('number');",
+                  "  pm.expect(j.stats.probes_alive, 'probes_alive missing; body: ' + text).to.be.a('number');",
+                  "  pm.expect(j.stats.probes_dead, 'probes_dead missing; body: ' + text).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/proxy-pools",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "proxy-pools"
+              ]
             }
           },
           "response": []

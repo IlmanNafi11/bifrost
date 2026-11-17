@@ -7,6 +7,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/proxypool"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -273,6 +274,35 @@ func proxyPoolRequest(r *router.Router, method, uri, body string) *fasthttp.Requ
 func requireStatus(t *testing.T, ctx *fasthttp.RequestCtx, want int) {
 	t.Helper()
 	require.Equal(t, want, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+}
+
+type proxyPoolStatsStub struct {
+	stats *proxypool.Stats
+}
+
+func (s proxyPoolStatsStub) ProxyPoolStats() *proxypool.Stats { return s.stats }
+
+func TestProxyPools_ListIncludesRuntimeStats(t *testing.T) {
+	store := newProxyPoolMemStore()
+	r := router.New()
+	h := NewProxyPoolHandler(store, nil)
+	h.SetStatsSource(proxyPoolStatsStub{stats: &proxypool.Stats{
+		Selections:    map[schemas.ProxyMechanism]uint64{schemas.ProxyWeighted: 3},
+		PoolExhausted: 1,
+		MarkedDead:    2,
+	}})
+	h.RegisterRoutes(r)
+
+	ctx := proxyPoolRequest(r, fasthttp.MethodGet, "/api/proxy-pools", "")
+	requireStatus(t, ctx, fasthttp.StatusOK)
+	var body struct {
+		Stats *proxypool.Stats `json:"stats"`
+	}
+	require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+	require.NotNil(t, body.Stats, "stats must be present when a source is configured")
+	require.Equal(t, uint64(3), body.Stats.Selections[schemas.ProxyWeighted])
+	require.Equal(t, uint64(1), body.Stats.PoolExhausted)
+	require.Equal(t, uint64(2), body.Stats.MarkedDead)
 }
 
 func TestProxyPools_CRUD(t *testing.T) {

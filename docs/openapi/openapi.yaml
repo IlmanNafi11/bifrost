@@ -1751,6 +1751,8 @@ components:
       $ref: "./schemas/management/proxypools.yaml#/ProxyPool"
     ProxyPoolList:
       $ref: "./schemas/management/proxypools.yaml#/ProxyPoolList"
+    ProxyPoolStats:
+      $ref: "./schemas/management/proxypools.yaml#/ProxyPoolStats"
     ProxyPoolMutation:
       $ref: "./schemas/management/proxypools.yaml#/ProxyPoolMutation"
     ProxyPoolImportRequest:

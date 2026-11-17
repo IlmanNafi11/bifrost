@@ -8240,6 +8240,19 @@ func applyProviderProxySignal(ctx *schemas.BifrostContext, proxyConfig *schemas.
 	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
 }
 
+// ProxyPoolStats returns a snapshot of per-key proxy-pool activity for
+// diagnostics and admin surfaces. It returns nil when no ProxyPoolStore was
+// configured, so callers can omit the stats from a response entirely. This is
+// not a request-path call: building the snapshot allocates a small map.
+func (bifrost *Bifrost) ProxyPoolStats() *proxypool.Stats {
+	manager := bifrost.proxyPoolManager
+	if manager == nil {
+		return nil
+	}
+	stats := manager.Stats()
+	return &stats
+}
+
 // proxyPoolExhaustedType is the wire-level error type for a bound pool that
 // cannot serve an attempt. It is terminal: the provider proxy must never be a
 // silent fallback for a key that asked for a pool.

@@ -5,6 +5,7 @@ import type {
 	ProxyPoolKeysRequest,
 	ProxyPoolMutation,
 	ProxyPoolProbeRequest,
+	ProxyPoolStats,
 	ProxyProbeResult,
 } from "@/lib/types/proxyPools";
 import { baseApi } from "./baseApi";
@@ -12,7 +13,7 @@ import { baseApi } from "./baseApi";
 // baseUrl already ends in /api, so every path here is root-relative to that.
 export const proxyPoolsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
-		getProxyPools: builder.query<{ pools: ProxyPool[] }, void>({
+		getProxyPools: builder.query<{ pools: ProxyPool[]; stats?: ProxyPoolStats }, void>({
 			query: () => "/proxy-pools",
 			providesTags: ["ProxyPools"],
 		}),

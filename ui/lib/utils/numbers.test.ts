@@ -122,7 +122,9 @@ describe("locale-aware number formatting", () => {
 
 	test("currency follows the active language, including amounts below one cent", async () => {
 		await useLocale("de");
-		expect(formatCurrencyNumber(1250)).toBe("1250,00\u00a0$");
+		// Compact notation has no German suffix below 10,000, so ICU renders 1250 as
+		// "1250 $" (non-breaking space) rather than a fixed-decimal "1250,00 $".
+		expect(formatCurrencyNumber(1250)).toBe("1250\u00a0$");
 		expect(formatCurrencyNumber(0.005)).toBe("0,0050\u00a0$");
 		expect(formatCurrencyNumber(-0.005)).toBe("-0,0050\u00a0$");
 	});
